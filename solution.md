@@ -124,3 +124,28 @@ relationship Попадает {
 
 @endchen
 ```
+
+```plantuml
+@startuml
+skinparam linetype ortho
+hide circle
+
+entity "Client" as Client {
+  * client_id : Identifier <<PK>>
+  --
+  * email : String <<unique>>
+}
+
+entity "Order" as Order {
+  * order_id : Identifier <<PK>>
+  --
+  * client_id : Identifier <<FK>>
+  * total_amount : Decimal
+  * status : Enum [new, paid, shipped]
+}
+
+' Один клиент — ноль или много заказов
+' «воронья лапка» рисуется со стороны Order
+Client ||--o{ Order : "оформляет"
+@enduml
+```
