@@ -224,7 +224,7 @@ relationship Фиксирует {
      - *Статусы аренды* (дополнительные): `early_terminated` (досрочно прервана), `overdue` (просрочена), `terminated_by_accident` (прервана по ДТП). 
 
 
-   - **Поля** `total_price`, `overdue_price`, `final_price` — материализованные (заполняются один раз при создании/завершении аренды и не пересчитываются). 
+   - **Поля** `rental_price_per_day_at_rent`, `coefficient_at_rent`, `total_price`, `overdue_price`, `final_price` — заполняются один раз при создании/завершении аренды и не пересчитываются (снэпшот). 
 
 
    - **Сумма ремонта авто** — фиксируется в сущности ДТП. 
@@ -260,8 +260,9 @@ relationship Фиксирует {
    - **Доступность для аренды**: Автомобиль доступен, если `technical_status = operational` **И** статус последней аренды — `completed` или `early_terminated`. 
 
 
-   - **Нарушение 3НФ (сознательное)**: Между `driver_license_series` и `driver_license_number` существует транзитивная зависимость (принято для производительности). 
-
+   - **Денормализация**: 
+     - Хранение driver_license_series и driver_license_number как отдельных полей в таблице Profile является сознательной денормализацией, нарушающей 3НФ из-за транзитивной зависимости между серией и номером. Переход на нормализованную структуру (одно поле или отдельная таблица) признан нецелесообразным из-за ухудшения производительности, усложнения кода и отсутствия реальной бизнес-выгоды.
+     - Хранение снэпшотов в таблице Rental является сознательной денормализацией, нарушающей 3НФ, но критически необходимой для обеспечения неизменности финансовой истории, соответствия юридическим требованиям и производительности системы. Пересчёт завершённых аренд при изменении тарифов запрещён.
 
    - **Местоположение**: Не хранится статически. Определяется в реальном времени через GPS-трекер (пользователь видит на карте).
 
@@ -373,7 +374,7 @@ entity "User" as User {
 entity "Profile" as Profile {
   * profile_id : Identifier <<PK>>
   --
-  * user_id : Identifier <<FK>>
+  * user_id : Identifier <<FK>> (уникально)
   * first_name : String
   patronymic : String
   * last_name : String
@@ -389,14 +390,21 @@ entity "Rental" as Rental {
   * start_date : Timestamp
   * end_date : Timestamp
   actual_end_date : Timestamp
-  * price_per_day_at_rent : Decimal
-  * coefficient_at_rent : Enum [0.5, 1.0, 1.5]
-  * total_price : Decimal
-  overdue_price : Decimal
-  final_price : Decimal
+  * price_per_day_at_rent : Decimal (снэпшот)
+  * coefficient_at_rent : Enum [0.5, 1.0, 1.5] (снэпшот)
+  * total_price : Decimal (снэпшот)
+  overdue_price : Decimal (снэпшот)
+  final_price : Decimal (снэпшот)
   * status : Enum [active, completed, early terminated, overdue, accident terminated]
   * created_at : Timestamp
 }
+
+note top of Rental
+  <b>Расчёт коэффициента:</b>
+  • Рейтинг вычисляется на основе ВСЕХ завершённых аренд пользователя
+  • Правила расчёта рейтинга заданы в бизнес-логике
+  • Коэффициент сохраняется как снэпшот при создании аренды
+end note
 
 entity "Car" as Car {
   * car_id : Identifier <<PK>>
@@ -417,9 +425,18 @@ entity "Accident" as Accident {
   * repair_price : Decimal
 }
 
-User ||--|| Profile
+User ||--o| Profile
+
+note bottom of Profile
+  <b>Связь Профиля с Пользователем:</b>
+  • Профиль создаётся только после регистрации пользователя
+  • Поле с идентификатором пользователя всегда заполнено
+  • При удалении пользователя (мягкое удаление) 
+    профиль остаётся в базе
+end note
+
 User ||--o{ Rental
-Rental }o--|| Car
+Rental }o--|| Car : только если Car.technical_status = operational и Rental.status = active или Rental.status = early terminated
 Rental ||--o| Accident
 @enduml
 ```
