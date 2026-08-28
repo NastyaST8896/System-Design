@@ -342,8 +342,6 @@ relationship Фиксирует {
 | `user_id`              | Уникальный идентификатор пользователя. | Identifier | Да             | Генерируется автоматически (surrogate key).    | Первичный ключ. На него ссылается профиль (Profile) и аренда (Rental).          |
 | `phone_number`         | Номер телефона.                        | Phone      | Да             | Только цифры, +, пробелы, дефисы, скобки.      | Используется для входа (логин) и отправки SMS.                                  |
 | `password_hash`        | Хеш пароля.                            | TEXT       | Да             | Должен быть не меньше 60 символов.             | Для аутентификации.                                                             |
-| `email`                | Электронная почта для входа.           | Email      | Нет            | Должен быть корректный email формат.           | Для рассылок и восстановления пароля.                                           |
-| `created_at`           | Дата создания записи.                  | Timestamp  | Да             | Не может быть больше текущей даты.             | Для аналитики.                                                                  |
 | `last_login_at`        | Дата последнего входа.                 | Timestamp  | Нет            | Обновляется при каждом входе на текущее время. | Для определения активности аудитории(MAU - Monthly Active Users).               |
 | `is_deleted`           | Флаг мягкого удаления.                 | Boolean    | Да             | По умолчанию false.                            | Позволяет скрыть пользователя, но сохранить профиль, чтобы не потерять историю. |
 
@@ -352,9 +350,10 @@ relationship Фиксирует {
 |:------------------------|:----------------------------------|:-----------|:---------------|:--------------------------------------------------------------------------------------------------------------------------------------------|:------------------------------------------------|
 | `profile_id`            | Уникальный идентификатор профиля. | Identifier | Да             | Генерируется автоматически (surrogate key).                                                                                                 | Первичный ключ.                                 |
 | `user_id`               | Ссылка на пользователя.           | Identifier | Да             | Имеет уникальное значение.                                                                                                                  | Обеспечивает связь один к одному. Внешний ключ. |
-| `first_name`            | Имя.                              | String     | Нет            | Не может быть пустым или содержать пробелы.                                                                                                 | Для договора аренды.                            |
-| `patronymic`            | Отчество.                         | String     | Нет            | Если указан, не может быть пустым или содержать пробелы.                                                                                    | Для договора аренды.                            |
-| `last_name`             | Фамилия.                          | String     | Нет            | Не может быть пустым или содержать пробелы.                                                                                                 | Для договора аренды.                            |
+| `email`                 | Электронная почта для входа.      | Email      | Нет            | Должен быть корректный email формат.                                                                                                        | Для рассылок и восстановления пароля.           |
+| `first_name`            | Имя.                              | String     | Нет            | Если указан, не может содержать пробелы.                                                                                                    | Для договора аренды.                            |
+| `patronymic`            | Отчество.                         | String     | Нет            | Если указан, не может содержать пробелы.                                                                                                    | Для договора аренды.                            |
+| `last_name`             | Фамилия.                          | String     | Нет            | Если указан, не может содержать пробелы.                                                                                                    | Для договора аренды.                            |
 | `driver_license`        | Серия и номер водительских прав.  | String     | Нет            | Должен состоять из 10 знаков. Представляющие собой цифры или первые 4 знака представляют собой комбинации из двух цифр и двух русских букв. | Для страховки ОСАГО и проверки стажа.           |
 
 
@@ -365,7 +364,7 @@ relationship Фиксирует {
 | `vin`                  | Vin-код автомобиля.                  | String     | Да             | 17-значный код, состоящий из латинских букв и цифр (буквы I, O, Q не используются).                                                      | Для проверки истории автомобиля (пробег, ДТП, ограничения, залоги) через внешние сервисы.                                                                                         |
 | `license_plate`        | Государственный номер автомобиля.    | String     | Да             | От 8 до 9 символов. Может содержать буквы: А, В, Е, К, М, Н, О, Р, С, Т, У, Х. Первой идет буква, затем 3 цифры, 2 буквы, 2 или 3 цифры. | Основной визуальный идентификатор для сотрудников и клиентов (по нему легко найти авто на парковке). Используется для взаимодействия с госорганами (штрафы, розыск, регистрация). |
 | `model_name`           | Модель авто.                         | Enum       | Да             | Lada Granta, Lada Vesta, Haval Jolion, Belgee X50, Geely Coolray.                                                                        | Для привлечения клиентов. Позволяет группировать автомобили.                                                                                                                      |
-| `rental_price_per_day` | Цена аренды за сутки.                | Decimal    | Да             | До двух знаков после точки. Не может быть отрицательным. Обновляемое значение.                                                           | Является ключевым бизнес-показателем для расчета итоговой стоимости бронирования. Может динамически меняться — поэтому разрешено обновление.                                      |
+| `rental_price_per_day` | Цена аренды за сутки.                | Integer    | Да             | Не может быть отрицательным. Обновляемое значение.                                                           | Является ключевым бизнес-показателем для расчета итоговой стоимости бронирования. Может динамически меняться — поэтому разрешено обновление.                                                                  |
 | `technical_status`     | Технический статус автомобиля        | Enum       | Да             | operational, maintenance, repair, retired.                                                                                               | Для определения доступности автомобиля для аренды.                                                                                                                                |
 
 ### **Rental**
@@ -377,10 +376,10 @@ relationship Фиксирует {
 | `start_date`            | Дата и время начала аренды.                                | Timestamp   | Да             | Должна совпадать с моментом создания аренды (created_at).                                        | Используется в расчете ожидаемого количества дней аренды. Является точкой отсчета.                                                                                                                    |
 | `end_date`              | Дата и время планового возврата автомобиля.                | Timestamp   | Да             | Должна быть строго позже start_date.                                                             | Используется в расчете ожидаемого количества дней аренды. Участвует в расчете рейтинга пользователя.                                                                                                  |
 | `actual_end_date`       | Фактическая дата и время возврата автомобиля.              | Timestamp   | Нет            | Если указан, должен быть позже или равен end_date.                                               | Триггер для расчёта просрочки (сравнение с end_date). Заполняется только при завершении аренды.                                                                                                       |
-| `price_per_day_at_rent` | Цена автомобиля за сутки на момент аренды.                 | Decimal     | Да             | До двух знаков после точки. Не может быть отрицательным.                                         | Фиксирует стоимость на момент аренды, чтобы она не менялась со временем (защита от изменения прайса).                                                                                                 |
+| `price_per_day_at_rent` | Цена автомобиля за сутки на момент аренды.                 | Integer     | Да             | Не может быть отрицательным.                                         | Фиксирует стоимость на момент аренды, чтобы она не менялась со временем (защита от изменения прайса).                                                                                                                             |
 | `coefficient_at_rent`   | Множитель (скидка/наценка), примененный к цене.            | ENUM        | Да             | Только: 0.5, 1.0, 1.5.                                                                           | Фиксирует коэффициент на момент аренды. Влияет на prepay_price.                                                                                                                                       |
-| `prepay_price`          | Стоимость аренды за плановый период с учётом коэффициента. | Decimal     | Да             | До двух знаков после точки. Не может быть отрицательным. Должен быть &ge; price_per_day_at_rent. | Используется для предоплаты (списывается при создании аренды).                                                                                                                                        |
-| `overdue_price`         | Стоимость доплаты за просрочку (коэффициент 2.0).          | Decimal     | Нет            | До двух знаков после точки. Не может быть отрицательным. По умолчанию 0.                         | Рассчитывается, если actual_end_date > end_date. Используется для доплаты при возврате.                                                                                                               |
+| `prepay_price`          | Стоимость аренды за плановый период с учётом коэффициента. | Integer     | Да             | Не может быть отрицательным. Должен быть &ge; price_per_day_at_rent. | Используется для предоплаты (списывается при создании аренды).                                                                                                                                                                    |
+| `overdue_price`         | Стоимость доплаты за просрочку (коэффициент 2.0).          | Integer     | Нет            | Не может быть отрицательным. По умолчанию 0.                         | Рассчитывается, если actual_end_date > end_date. Используется для доплаты при возврате.                                                                                                                                           |
 | `status`                | Текущий статус аренды.                                     | ENUM        | Да             | active, completed.                                                                               | Определяет сценарий возврата. Влияет на возможность новой аренды, рейтинг пользователя и доступность авто.                                                                                            |
 
 ### **Accident**
@@ -389,7 +388,7 @@ relationship Фиксирует {
 | `accident_id`   | Уникальный идентификатор ДТП. | Identifier | Да             | Генерируется автоматически (surrogate key).    |Первичный ключ. Обеспечивает уникальность записи о каждом ДТП. Для поддержки клиентов и внутреннего учета (позволяет быстро находить конкретное ДТП). |
 | `rental_id`     | Ссылка на аренду.             | Identifier | Да             | Внешний ключ (FK) к таблице rental.            | Для привязки ДТП к конкретной аренде. Позволяет определить, какой клиент и автомобиль участвовали в инциденте.                                       |
 | `severity`      | Cтепень повреждений.          | ENUM       | Да             | minor, moderate, severe.                       | Для классификации серьёзности ДТП. Влияет на рейтинг пользователя и решение о списании автомобиля.                                                   |
-| `repair_price`  | Цена ремонта автомобиля       | Decimal    | Да             | Не может быть отрицательным числом.            | Для расчёта финансовых потерь компании. Используется при страховых выплатах и анализе убыточности автопарка.                                         |
+| `repair_price`  | Цена ремонта автомобиля       | Integer    | Нет            | Не может быть отрицательным числом.            | Для расчёта финансовых потерь компании. Используется при страховых выплатах и анализе убыточности автопарка.                                         |
 
 ### Logical-level ERD
 
@@ -399,21 +398,21 @@ skinparam linetype ortho
 hide circle
 
 entity "User" as User {
-  * user_id : Identifier <<FK>> (уникально)
+  * id : Identifier <<FK>> (уникально)
   --
   * phone_number : Phone
   * password_hash : TEXT
   * created_at : Timestamp
   * is_deleted : Boolean
-  email : Email
   last_login_at : Timestamp
 
 }
 
 entity "Profile" as Profile {
-  * profile_id : Identifier <<PK>>
+  * id : Identifier <<PK>>
   --
   * user_id : Identifier <<FK>>
+  email : Email
   first_name : String
   patronymic : String
   last_name : String
@@ -421,7 +420,7 @@ entity "Profile" as Profile {
 }
 
 entity "Rental" as Rental {
-  * rental_id : Identifier <<PK>>
+  * id : Identifier <<PK>>
   --
   * user_id : Identifier <<FK>>
   * car_id : Identifier <<FK>>
@@ -443,7 +442,7 @@ note top of Rental
 end note
 
 entity "Car" as Car {
-  * car_id : Identifier <<PK>>
+  * id : Identifier <<PK>>
   --
   * vin : String
   * license_plate : String
@@ -453,7 +452,7 @@ entity "Car" as Car {
 }
 
 entity "Accident" as Accident {
-  * accident_id : Identifier <<PK>>
+  * id : Identifier <<PK>>
   --
   * rental_id : Identifier <<FK>>
   * severity : Enum [minor, moderate, severe]
@@ -479,10 +478,96 @@ note top of Rental
 end note
 
 Rental }o--|| Car : только если Car.technical_status = operational и последний Rental.status = completed
->>>>>>> f3dd081 (refactor 26.08.2026)
 Rental ||--o| Accident
 @enduml
 ```
+
+create type car_model_enum as enum (
+	'Lada Granta', 
+    'Lada Vesta', 
+    'Haval Jolion', 
+    'Belgee X50', 
+    'Geely Coolray'
+);
+
+create type car_technical_status_enum as enum (
+    'operational', 
+    'maintenance', 
+    'repair', 
+    'retired'
+);
+
+create type rental_status_enum as enum (
+    'active', 
+    'completed'
+);
+
+create type rental_coefficient_enum as enum (
+    '0.5', 
+    '1.0', 
+    '1.5'
+);
+
+create type accident_severity_enum as enum (
+    'minor', 
+    'moderate', 
+    'severe'
+);
+
+create table "User" (
+    id UUID primary key default gen_random_uuid(),
+    phone_number VARCHAR(20) unique not null check (phone_number ~ '^(\+7|8)[\- ]?\(?\d{3}\)?[\- ]?\d{3}[\- ]?\d{2}[\- ]?\d{2}$'),
+    password_hash TEXT not null check (LENGTH(password_hash) >= 60),
+    last_login_at TIMESTAMPTZ not null default NOW(),
+    is_deleted BOOLEAN not null default false
+);
+
+create table "Profile" (
+    id UUID primary key default gen_random_uuid(),
+    user_id UUID unique not null,
+    email VARCHAR(255) unique check (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
+    first_name VARCHAR(100) check (first_name is null or first_name not like '% %'),
+    patronymic VARCHAR(100) check (patronymic is null or patronymic not like '% %'),
+    last_name VARCHAR(100) check (last_name is null or last_name not like '% %'),
+    driver_license VARCHAR(10) check (driver_license ~ '^[0-9А-Я]{10}$'),
+    constraint fk_profile_user foreign key (user_id) references "User"(id) on delete restrict
+);
+
+create table "Car" (
+    id UUID primary key default gen_random_uuid(),
+    vin VARCHAR(17) unique not null check (vin ~ '^[A-HJ-NPR-Z0-9]{17}$'),
+    license_plate VARCHAR(9) unique not null check (license_plate ~ '^[АВЕКМНОРСТУХ][0-9]{3}[АВЕКМНОРСТУХ]{2}[0-9]{2,3}$'),
+    model_name car_model_enum not null,
+    rental_price_per_day BIGINT not null check (rental_price_per_day > 0),
+    technical_status car_technical_status_enum not null default 'operational'
+);
+
+create table "Rental" (
+    id UUID primary key default gen_random_uuid(),
+    user_id UUID not null,
+    car_id UUID not null,
+    start_date TIMESTAMPTZ not null,
+    end_date TIMESTAMPTZ not null,
+    actual_end_date TIMESTAMPTZ,
+    price_per_day_at_rent BIGINT not null check (price_per_day_at_rent > 0),
+    coefficient_at_rent rental_coefficient_enum not null default '1.0',
+    prepay_price BIGINT not null check (prepay_price >= 0),
+    overdue_price BIGINT check (overdue_price >= 0) default 0,
+    status rental_status_enum not null default 'active',
+    constraint prepay_vs_price_per_day check (prepay_price >= price_per_day_at_rent),
+    constraint chk_rental_dates check (end_date > start_date),
+    constraint chk_rental_actual_end check (actual_end_date is null or actual_end_date > start_date),
+    constraint fk_rental_user foreign key (user_id) references "User"(id) on delete restrict,
+    constraint fk_rental_car foreign key (car_id) references "Car"(id) on delete restrict
+);
+
+create table "Accident" (
+    id UUID primary key default gen_random_uuid(),
+    rental_id UUID unique not null,
+    severity accident_severity_enum not null,
+    repair_price BIGINT check (repair_price >= 0),
+    constraint fk_accident_rental foreign key (rental_id) references "Rental"(id) on delete restrict
+);
 
 
 
