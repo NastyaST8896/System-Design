@@ -9,7 +9,7 @@
 
 | Сущность       | Описание                                                                 |
 |:---------------|:-------------------------------------------------------------------------|
-| `Пользователь` | Аккаунт пользователя сервиса.                                            |
+| `Пользователь` | Аккаунт пользоывателя сервиса.                                            |
 | `Профиль`      | Личные данные пользователя: ФИО, номер водительских прав.                |
 | `Автомобиль`   | Машина, доступная для аренды. Поля: гос. номер, цена за сутки, марка.    |
 | `Аренда`       | Факт сдачи автомобиля пользователю на определённые сутки.                |
@@ -482,6 +482,19 @@ Rental ||--o| Accident
 @enduml
 ```
 
+
+## **Physical-level ERD**
+
+
+### Целевая СУБД
+PostgreSQL 18.6
+
+
+Схема рассчитана на небольшую или среднюю нагрузку. Предполагаемый объём данных: до 100 000 пользователей и столько же профилей, до 20 000 автомобилей, до 1 000 000 аренд за два года эксплуатации и до 50 000 записей об авариях. Основные операции: создание аренды, поиск активных аренд, завершение аренды, расчёт просрочки, просмотр истории по пользователю и автомобилю. Партиционирование и шардирование не требуются, так как предполагаемый объём данных и нагрузка не требуют распределения данных по отдельным разделам или узлам.
+
+
+### Physical-level ERD
+``` sql
 create type car_model_enum as enum (
 	'Lada Granta', 
     'Lada Vesta', 
@@ -554,7 +567,6 @@ create table "Rental" (
     prepay_price BIGINT not null check (prepay_price >= 0),
     overdue_price BIGINT check (overdue_price >= 0) default 0,
     status rental_status_enum not null default 'active',
-    constraint prepay_vs_price_per_day check (prepay_price >= price_per_day_at_rent),
     constraint chk_rental_dates check (end_date > start_date),
     constraint chk_rental_actual_end check (actual_end_date is null or actual_end_date > start_date),
     constraint fk_rental_user foreign key (user_id) references "User"(id) on delete restrict,
@@ -568,6 +580,854 @@ create table "Accident" (
     repair_price BIGINT check (repair_price >= 0),
     constraint fk_accident_rental foreign key (rental_id) references "Rental"(id) on delete restrict
 );
+```
 
+``` sql
+-- =================================================---------------
+-- Генерация тестовых данных с учётом:
+-- пользователи с незаполненным профилем не имеют аренд
+-- =================================================---------------
 
+SELECT setseed(0.42);
 
+-- Эти параметры можно убрать, если ваш клиент/сервер на них ругается
+SET work_mem = '256MB';
+SET maintenance_work_mem = '512MB';
+
+-- Если нужно, можно дополнительно отключить синхронную фиксацию
+-- для ускорения, но в некоторых окружениях это запрещено:
+-- SET synchronous_commit = off;
+
+-- Пытаемся создать расширение, если вдруг оно ещё не создано.
+-- Если прав нет, просто глотаем ошибку и надеемся, что
+-- gen_random_uuid() уже доступен в БД.
+DO $$
+BEGIN
+    EXECUTE 'CREATE EXTENSION IF NOT EXISTS pgcrypto';
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END;
+$$;
+
+-- =================================================---------------
+-- Очистка данных
+-- =================================================---------------
+
+TRUNCATE TABLE "Accident", "Rental", "Car", "Profile", "User" CASCADE;
+
+-- =================================================---------------
+-- Вспомогательные функции во временной схеме
+-- =================================================---------------
+
+CREATE OR REPLACE FUNCTION pg_temp.gen_vin(p bigint)
+RETURNS varchar(17)
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+    alphabet text := 'ABCDEFGHJKLMNPRSTUVWXYZ0123456789';
+    res text := '';
+    x bigint := p;
+BEGIN
+    FOR i IN 1..17 LOOP
+        res := substr(alphabet, (x % 33)::int + 1, 1) || res;
+        x := x / 33;
+    END LOOP;
+
+    RETURN res;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION pg_temp.gen_plate(p bigint)
+RETURNS varchar(9)
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+    letters text[] := ARRAY['А','В','Е','К','М','Н','О','Р','С','Т','У','Х'];
+    l1 int;
+    d1 int;
+    l2 int;
+    l3 int;
+    region int;
+BEGIN
+    l1 := (p % 12)::int + 1;
+    d1 := ((p / 12) % 1000)::int;
+    l2 := ((p / 12000) % 12)::int + 1;
+    l3 := ((p / 144000) % 12)::int + 1;
+    region := 100 + ((p / 1728000) % 900)::int;
+
+    RETURN letters[l1] || lpad(d1::text, 3, '0') || letters[l2] || letters[l3] || region::text;
+END;
+$$;
+
+-- =================================================---------------
+-- Пользователи и профили
+-- =================================================---------------
+
+DROP TABLE IF EXISTS user_map;
+
+CREATE TEMP TABLE user_map AS
+WITH base AS (
+    SELECT
+        gen_random_uuid() AS id,
+        g,
+        (g % 10 = 0) AS is_deleted,
+
+        -- 15% профилей будут пустыми:
+        -- 3 значения из 20 = 15%
+        (g % 20 IN (1, 2, 3)) AS empty_profile
+    FROM generate_series(1, 6000) g
+),
+
+numbered AS (
+    SELECT
+        b.*,
+        row_number() OVER (
+            PARTITION BY b.empty_profile
+            ORDER BY b.g
+        ) AS profile_rn
+    FROM base b
+),
+
+rules AS (
+    SELECT
+        n.*,
+
+        -- Номер среди полностью заполненных профилей.
+        -- Для пустых профилей он не используется.
+        CASE
+            WHEN n.empty_profile THEN NULL
+            ELSE n.profile_rn
+        END AS full_rn,
+
+        CASE
+            -- Пользователи с неполным профилем не могут иметь аренд.
+            WHEN n.empty_profile THEN 0
+
+            -- Среди полностью заполненных профилей первых 100 сделаем без аренд,
+            -- чтобы осталось ровно 5000 пользователей с арендами.
+            WHEN n.profile_rn <= 100 THEN 0
+
+            -- Остальные 5000 пользователей с полным профилем получают по 200 аренд.
+            -- Итого: 5000 * 200 = 1 000 000 аренд.
+            ELSE 200
+        END AS rental_count
+    FROM numbered n
+)
+
+SELECT
+    r.id,
+    r.g,
+    r.is_deleted,
+    r.empty_profile,
+    r.rental_count,
+
+    CASE
+        WHEN r.rental_count = 0 THEN 'none'
+        WHEN ((r.full_rn - 101) % 5) = 0 THEN 'none'
+        WHEN ((r.full_rn - 101) % 5) IN (1, 2) THEN 'low'
+        ELSE 'high'
+    END AS accident_category,
+
+    -- Активная аренда только у пользователя с полным профилем
+    -- и не у удалённого пользователя.
+    (
+        r.rental_count > 0
+        AND NOT r.is_deleted
+        AND r.empty_profile = false
+        AND ((COALESCE(r.full_rn, 0) - 100) % 25 = 0)
+    ) AS has_active
+FROM rules r;
+
+INSERT INTO "User" (
+    id,
+    phone_number,
+    password_hash,
+    last_login_at,
+    is_deleted
+)
+SELECT
+    um.id,
+    '8' || (9000000000 + um.g)::text,
+    'hash$2b$12$' || md5(um.id::text) || md5(um.g::text),
+    now() - (random() * interval '30 days'),
+    um.is_deleted
+FROM user_map um;
+
+INSERT INTO "Profile" (
+    id,
+    user_id,
+    email,
+    first_name,
+    patronymic,
+    last_name,
+    driver_license
+)
+SELECT
+    gen_random_uuid(),
+    um.id,
+    CASE
+        WHEN um.empty_profile THEN NULL
+        ELSE 'user' || um.g::text || '@example.com'
+    END,
+    CASE
+        WHEN um.empty_profile THEN NULL
+        ELSE 'Имя' || (um.g % 1000)::text
+    END,
+    CASE
+        WHEN um.empty_profile THEN NULL
+        ELSE 'Отчество' || (um.g % 900)::text
+    END,
+    CASE
+        WHEN um.empty_profile THEN NULL
+        ELSE 'Фамилия' || (um.g % 800)::text
+    END,
+    CASE
+        WHEN um.empty_profile THEN NULL
+        ELSE lpad(um.g::text, 10, '0')
+    END
+FROM user_map um;
+
+-- =================================================---------------
+-- Временная таблица аренд без машин
+-- =================================================---------------
+
+DROP TABLE IF EXISTS rental_stage;
+
+CREATE TEMP TABLE rental_stage (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL,
+    start_date timestamptz NOT NULL,
+    end_date timestamptz NOT NULL,
+    actual_end_date timestamptz,
+    rental_days int NOT NULL,
+    coefficient_at_rent rental_coefficient_enum NOT NULL,
+    status rental_status_enum NOT NULL,
+    has_accident boolean NOT NULL,
+    severity accident_severity_enum,
+    overdue_days int NOT NULL DEFAULT 0
+);
+
+-- ================================================================
+-- Генерация аренд по пользователям
+-- ================================================================
+
+DO $$
+DECLARE
+    u record;
+
+    v_now timestamptz := now();
+    v_horizon timestamptz := now() - interval '730 days';
+
+    v_current_ts timestamptz;
+    v_start timestamptz;
+    v_end timestamptz;
+    v_actual timestamptz;
+
+    v_duration int;
+    v_days int;
+    v_coeff rental_coefficient_enum;
+    v_status rental_status_enum;
+
+    v_has boolean;
+    v_sev accident_severity_enum;
+    v_overdue int;
+
+    v_weight int;
+    v_rating numeric;
+    v_len int;
+    v_denom int;
+    v_r numeric;
+
+    v_weights int[];
+    v_sum int;
+    v_severe_count int;
+
+    v_start_arr timestamptz[];
+    v_end_arr timestamptz[];
+    v_actual_arr timestamptz[];
+    v_days_arr int[];
+    v_coeff_arr rental_coefficient_enum[];
+    v_status_arr rental_status_enum[];
+    v_has_arr boolean[];
+    v_sev_arr accident_severity_enum[];
+    v_overdue_arr int[];
+BEGIN
+    FOR u IN
+        SELECT
+            id,
+            rental_count,
+            accident_category,
+            has_active
+        FROM user_map
+        WHERE rental_count > 0
+        ORDER BY random()
+    LOOP
+        v_weights := '{}'::int[];
+        v_sum := 0;
+        v_severe_count := 0;
+
+        -- Стартовое смещение пользователя внутри 2-летнего окна.
+        v_current_ts := v_horizon + make_interval(days => (random() * 100)::int);
+
+        v_start_arr := '{}'::timestamptz[];
+        v_end_arr := '{}'::timestamptz[];
+        v_actual_arr := '{}'::timestamptz[];
+        v_days_arr := '{}'::int[];
+        v_coeff_arr := '{}'::rental_coefficient_enum[];
+        v_status_arr := '{}'::rental_status_enum[];
+        v_has_arr := '{}'::boolean[];
+        v_sev_arr := '{}'::accident_severity_enum[];
+        v_overdue_arr := '{}'::int[];
+
+        FOR i IN 1..u.rental_count LOOP
+            ------------------------------------------------------------
+            -- Расчёт рейтинга до создания текущей аренды
+            ------------------------------------------------------------
+            v_len := coalesce(array_length(v_weights, 1), 0);
+
+            IF v_len = 0 THEN
+                v_rating := 100;
+            ELSE
+                v_denom := greatest(v_len, 3);
+                v_rating := 100 - (v_sum::numeric / v_denom) * 33.33;
+
+                IF v_severe_count > 0 AND v_rating > 84 THEN
+                    v_rating := 84;
+                END IF;
+
+                IF v_rating < 0 THEN
+                    v_rating := 0;
+                ELSIF v_rating > 100 THEN
+                    v_rating := 100;
+                END IF;
+            END IF;
+
+            IF v_rating >= 86 THEN
+                v_coeff := '0.5'::rental_coefficient_enum;
+            ELSIF v_rating >= 30 THEN
+                v_coeff := '1.0'::rental_coefficient_enum;
+            ELSE
+                v_coeff := '1.5'::rental_coefficient_enum;
+            END IF;
+
+            ------------------------------------------------------------
+            -- Активная аренда: только последняя и только будущая
+            ------------------------------------------------------------
+            IF u.has_active AND i = u.rental_count THEN
+                v_status := 'active'::rental_status_enum;
+
+                v_start := greatest(
+                    v_current_ts + interval '1 hour',
+                    v_now - interval '1 day'
+                );
+
+                v_duration := 2;
+                v_end := v_start + make_interval(days => v_duration);
+
+                IF v_end <= v_now THEN
+                    v_end := v_now + interval '1 day';
+                END IF;
+
+                v_days := greatest(1, (v_end::date - v_start::date));
+                v_actual := NULL;
+                v_overdue := 0;
+                v_has := false;
+                v_sev := NULL;
+
+            ------------------------------------------------------------
+            -- Завершённая аренда
+            ------------------------------------------------------------
+            ELSE
+                v_status := 'completed'::rental_status_enum;
+
+                -- Для коэффициента 0.5 минимально делаем 2 дня,
+                -- чтобы prepay_price не нарушил CHECK.
+                IF v_coeff = '0.5'::rental_coefficient_enum THEN
+                    v_duration := 2;
+                ELSE
+                    v_duration := 1 + (i % 2);
+                END IF;
+
+                v_start := v_current_ts;
+                v_end := v_start + make_interval(days => v_duration);
+
+                -- Ровно 15% аренд имеют просрочку возврата.
+                -- Для управляемости берём 3 индекса из 20.
+                IF (i % 20) IN (1, 2, 3) THEN
+                    v_overdue := 1;
+                    v_actual := v_end + interval '1 day';
+                ELSE
+                    v_overdue := 0;
+                    v_actual := NULL;
+                END IF;
+
+                -- Детерминированное распределение ДТП по категориям пользователей.
+                IF u.accident_category = 'none' THEN
+                    v_has := false;
+                ELSIF u.accident_category = 'low' THEN
+                    v_has := (i % 5 = 0);
+                ELSE
+                    v_has := ((i % 5) IN (0, 1, 2));
+                END IF;
+
+                IF v_has THEN
+                    v_r := random();
+
+                    IF v_r < 0.5 THEN
+                        v_sev := 'minor'::accident_severity_enum;
+                    ELSIF v_r < 0.8 THEN
+                        v_sev := 'moderate'::accident_severity_enum;
+                    ELSE
+                        v_sev := 'severe'::accident_severity_enum;
+                    END IF;
+                ELSE
+                    v_sev := NULL;
+                END IF;
+
+                v_days := v_duration;
+
+                -- Следующая аренда пользователя может начаться только после фактического возврата.
+                v_current_ts := coalesce(v_actual, v_end);
+
+                -- Небольшие паузы между арендами, чтобы снизить непрерывную нагрузку.
+                IF i % 3 = 0 THEN
+                    v_current_ts := v_current_ts + interval '1 day';
+                END IF;
+
+                ------------------------------------------------------------
+                -- Обновляем скользящее окно рейтинга: последние 60 завершённых аренд
+                ------------------------------------------------------------
+                IF v_has THEN
+                    v_weight := CASE v_sev
+                        WHEN 'minor'::accident_severity_enum THEN 1
+                        WHEN 'moderate'::accident_severity_enum THEN 2
+                        ELSE 3
+                    END;
+                ELSE
+                    v_weight := 0;
+                END IF;
+
+                IF v_len >= 60 THEN
+                    IF v_weights[1] = 3 THEN
+                        v_severe_count := v_severe_count - 1;
+                    END IF;
+
+                    v_sum := v_sum - v_weights[1];
+                    v_weights := v_weights[2:array_length(v_weights, 1)];
+                END IF;
+
+                v_weights := array_append(v_weights, v_weight);
+                v_sum := v_sum + v_weight;
+
+                IF v_weight = 3 THEN
+                    v_severe_count := v_severe_count + 1;
+                END IF;
+            END IF;
+
+            ------------------------------------------------------------
+            -- Добавляем аренду в массивы пользователя
+            ------------------------------------------------------------
+            v_start_arr := array_append(v_start_arr, v_start);
+            v_end_arr := array_append(v_end_arr, v_end);
+            v_actual_arr := array_append(v_actual_arr, v_actual);
+            v_days_arr := array_append(v_days_arr, v_days);
+            v_coeff_arr := array_append(v_coeff_arr, v_coeff);
+            v_status_arr := array_append(v_status_arr, v_status);
+            v_has_arr := array_append(v_has_arr, v_has);
+            v_sev_arr := array_append(v_sev_arr, v_sev);
+            v_overdue_arr := array_append(v_overdue_arr, v_overdue);
+        END LOOP;
+
+        INSERT INTO rental_stage (
+            user_id,
+            start_date,
+            end_date,
+            actual_end_date,
+            rental_days,
+            coefficient_at_rent,
+            status,
+            has_accident,
+            severity,
+            overdue_days
+        )
+        SELECT
+            u.id,
+            t.start_date,
+            t.end_date,
+            t.actual_end_date,
+            t.rental_days,
+            t.coefficient_at_rent,
+            t.status,
+            t.has_accident,
+            t.severity,
+            t.overdue_days
+        FROM unnest(
+            v_start_arr,
+            v_end_arr,
+            v_actual_arr,
+            v_days_arr,
+            v_coeff_arr,
+            v_status_arr,
+            v_has_arr,
+            v_sev_arr,
+            v_overdue_arr
+        ) AS t (
+            start_date,
+            end_date,
+            actual_end_date,
+            rental_days,
+            coefficient_at_rent,
+            status,
+            has_accident,
+            severity,
+            overdue_days
+        );
+    END LOOP;
+END;
+$$;
+
+-- ================================================================
+-- Автомобили: размер парка подбирается по пиковому спросу
+-- ================================================================
+
+DROP TABLE IF EXISTS car_plan;
+
+CREATE TEMP TABLE car_plan (
+    k int,
+    total int,
+    op int,
+    maint int,
+    repair int,
+    retired int
+);
+
+DO $$
+DECLARE
+    v_max_starts int;
+    v_k int;
+BEGIN
+    -- Максимальное число стартов аренд за любые 5 календарных дней.
+    -- Это запас для безопасного циклического назначения машин.
+    SELECT coalesce(max(cnt), 1) INTO v_max_starts
+    FROM (
+        SELECT
+            d1.day,
+            sum(d2.cnt) AS cnt
+        FROM (
+            SELECT
+                date_trunc('day', start_date)::date AS day,
+                count(*) AS cnt
+            FROM rental_stage
+            GROUP BY 1
+        ) d1
+        JOIN (
+            SELECT
+                date_trunc('day', start_date)::date AS day,
+                count(*) AS cnt
+            FROM rental_stage
+            GROUP BY 1
+        ) d2
+          ON d2.day BETWEEN d1.day AND d1.day + 4
+        GROUP BY d1.day
+    ) t;
+
+    -- 14/20 = 70% operational.
+    -- Операционных машин должно быть не меньше пикового спроса.
+    v_k := ceil((v_max_starts + 1)::numeric / 14)::int;
+
+    IF v_k < 1 THEN
+        v_k := 1;
+    END IF;
+
+    INSERT INTO car_plan VALUES (
+        v_k,
+        v_k * 20,
+        v_k * 14,
+        v_k * 3,
+        v_k * 2,
+        v_k
+    );
+
+    RAISE NOTICE 'Max starts in 5-day window: %, total cars: %, operational cars: %',
+        v_max_starts, v_k * 20, v_k * 14;
+END;
+$$;
+
+INSERT INTO "Car" (
+    id,
+    vin,
+    license_plate,
+    model_name,
+    rental_price_per_day,
+    technical_status
+)
+SELECT
+    gen_random_uuid(),
+    pg_temp.gen_vin(g),
+    pg_temp.gen_plate(g),
+    ((ARRAY[
+        'Lada Granta',
+        'Lada Vesta',
+        'Haval Jolion',
+        'Belgee X50',
+        'Geely Coolray'
+    ])::car_model_enum[])[1 + (g % 5)],
+    1000 + ((g % 100) * 50)::bigint,
+    CASE
+        WHEN g <= p.op THEN 'operational'::car_technical_status_enum
+        WHEN g <= p.op + p.maint THEN 'maintenance'::car_technical_status_enum
+        WHEN g <= p.op + p.maint + p.repair THEN 'repair'::car_technical_status_enum
+        ELSE 'retired'::car_technical_status_enum
+    END
+FROM car_plan p
+CROSS JOIN LATERAL generate_series(1, p.total) g;
+
+DROP TABLE IF EXISTS op_cars;
+
+CREATE TEMP TABLE op_cars AS
+SELECT
+    id,
+    rental_price_per_day,
+    row_number() OVER (ORDER BY license_plate) AS rn
+FROM "Car"
+WHERE technical_status = 'operational'::car_technical_status_enum;
+
+CREATE INDEX ON op_cars (rn);
+
+-- ================================================================
+-- Финальная вставка аренд с назначением автомобилей
+-- ================================================================
+
+INSERT INTO "Rental" (
+    id,
+    user_id,
+    car_id,
+    start_date,
+    end_date,
+    actual_end_date,
+    price_per_day_at_rent,
+    coefficient_at_rent,
+    prepay_price,
+    overdue_price,
+    status
+)
+SELECT
+    st.id,
+    st.user_id,
+    oc.id,
+    st.start_date,
+    st.end_date,
+    st.actual_end_date,
+    oc.rental_price_per_day,
+    st.coefficient_at_rent,
+    greatest(
+        ceil(oc.rental_price_per_day * st.rental_days * st.coeff_num)::bigint,
+        oc.rental_price_per_day
+    ),
+    CASE
+        WHEN st.overdue_days > 0 THEN
+            ceil(oc.rental_price_per_day * st.overdue_days * st.coeff_num * 2)::bigint
+        ELSE 0
+    END,
+    st.status
+FROM (
+    SELECT
+        rs.*,
+        row_number() OVER (ORDER BY rs.start_date, rs.id) AS rn,
+        CASE rs.coefficient_at_rent
+            WHEN '0.5'::rental_coefficient_enum THEN 0.5
+            WHEN '1.0'::rental_coefficient_enum THEN 1.0
+            ELSE 1.5
+        END AS coeff_num
+    FROM rental_stage rs
+) st
+CROSS JOIN (
+    SELECT count(*) AS n
+    FROM op_cars
+) c
+JOIN op_cars oc
+  ON oc.rn = 1 + ((st.rn - 1) % c.n);
+
+-- ================================================================
+-- ДТП
+-- ================================================================
+
+INSERT INTO "Accident" (
+    id,
+    rental_id,
+    severity,
+    repair_price
+)
+SELECT
+    gen_random_uuid(),
+    rs.id,
+    rs.severity,
+    CASE rs.severity
+        WHEN 'minor'::accident_severity_enum THEN
+            (random() * 5000)::bigint
+        WHEN 'moderate'::accident_severity_enum THEN
+            5000 + (random() * 50000)::bigint
+        ELSE
+            50000 + (random() * 500000)::bigint
+    END
+FROM rental_stage rs
+WHERE rs.has_accident
+  AND rs.severity IS NOT NULL;
+
+DROP TABLE IF EXISTS rental_stage;
+DROP TABLE IF EXISTS op_cars;
+DROP TABLE IF EXISTS car_plan;
+
+-- ================================================================
+-- Проверки целостности и контрольных метрик
+-- ================================================================
+
+DO $$
+DECLARE
+    bad bigint;
+    total_rentals bigint;
+    overdue_cnt bigint;
+    active_cnt bigint;
+    incomplete_profile_rentals bigint;
+BEGIN
+    SELECT count(*) INTO total_rentals
+    FROM "Rental";
+
+    IF total_rentals < 1000000 THEN
+        RAISE EXCEPTION 'Rentals less than 1000000: %', total_rentals;
+    END IF;
+
+    ------------------------------------------------------------
+    -- Проверка: у каждого пользователя с арендой есть профиль
+    ------------------------------------------------------------
+    SELECT count(*) INTO bad
+    FROM "Rental" r
+    LEFT JOIN "Profile" p ON p.user_id = r.user_id
+    WHERE p.user_id IS NULL;
+
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'Rentals without profile found: %', bad;
+    END IF;
+
+    ------------------------------------------------------------
+    -- Проверка: у пользователей с неполным профилем нет аренд
+    ------------------------------------------------------------
+    SELECT count(*) INTO incomplete_profile_rentals
+    FROM "Rental" r
+    JOIN "Profile" p ON p.user_id = r.user_id
+    WHERE p.email IS NULL
+       OR p.first_name IS NULL
+       OR p.patronymic IS NULL
+       OR p.last_name IS NULL
+       OR p.driver_license IS NULL;
+
+    IF incomplete_profile_rentals > 0 THEN
+        RAISE EXCEPTION 'Rentals for users with incomplete profiles found: %', incomplete_profile_rentals;
+    END IF;
+
+    ------------------------------------------------------------
+    -- Проверка: у пользователя не должно быть пересечений аренд
+    ------------------------------------------------------------
+    SELECT count(*) INTO bad
+    FROM (
+        SELECT
+            user_id,
+            start_date,
+            lag(busy_until) OVER (
+                PARTITION BY user_id
+                ORDER BY start_date, id
+            ) AS prev_busy
+        FROM (
+            SELECT
+                id,
+                user_id,
+                start_date,
+                coalesce(actual_end_date, end_date) AS busy_until
+            FROM "Rental"
+        ) t
+    ) x
+    WHERE prev_busy IS NOT NULL
+      AND prev_busy > start_date;
+
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'User rental overlap found: %', bad;
+    END IF;
+
+    ------------------------------------------------------------
+    -- Проверка: автомобиль не должен участвовать в пересекающихся арендах
+    ------------------------------------------------------------
+    SELECT count(*) INTO bad
+    FROM (
+        SELECT
+            car_id,
+            start_date,
+            lag(busy_until) OVER (
+                PARTITION BY car_id
+                ORDER BY start_date, id
+            ) AS prev_busy
+        FROM (
+            SELECT
+                id,
+                car_id,
+                start_date,
+                coalesce(actual_end_date, end_date) AS busy_until
+            FROM "Rental"
+        ) t
+    ) x
+    WHERE prev_busy IS NOT NULL
+      AND prev_busy > start_date;
+
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'Car rental overlap found: %', bad;
+    END IF;
+
+    ------------------------------------------------------------
+    -- Активные аренды должны быть только на машинах в статусе operational
+    ------------------------------------------------------------
+    SELECT count(*) INTO bad
+    FROM "Rental" r
+    JOIN "Car" c ON c.id = r.car_id
+    WHERE r.status = 'active'::rental_status_enum
+      AND c.technical_status <> 'operational'::car_technical_status_enum;
+
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'Active rentals on non-operational cars found: %', bad;
+    END IF;
+
+    ------------------------------------------------------------
+    -- Активные аренды не должны иметь просрочку больше 5 дней
+    ------------------------------------------------------------
+    SELECT count(*) INTO bad
+    FROM "Rental"
+    WHERE status = 'active'::rental_status_enum
+      AND end_date < now() - interval '5 days';
+
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'Active rentals overdue > 5 days found: %', bad;
+    END IF;
+
+    SELECT count(*) INTO overdue_cnt
+    FROM "Rental"
+    WHERE actual_end_date IS NOT NULL
+      AND overdue_price > 0;
+
+    SELECT count(*) INTO active_cnt
+    FROM "Rental"
+    WHERE status = 'active'::rental_status_enum;
+
+    RAISE NOTICE 'Rentals: %, overdue rentals: % (% percent), active rentals: %',
+        total_rentals,
+        overdue_cnt,
+        round(overdue_cnt * 100.0 / nullif(total_rentals, 0), 2),
+        active_cnt;
+END;
+$$;
+
+ANALYZE "User";
+ANALYZE "Profile";
+ANALYZE "Car";
+ANALYZE "Rental";
+ANALYZE "Accident";
+```
