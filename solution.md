@@ -487,7 +487,7 @@ Rental ||--o| Accident
 
 
 ### Целевая СУБД
-PostgreSQL 18.6
+PostgreSQL 18.6 on aarch64-apple-darwin24.6.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.5), 64-bit
 
 ### Денормализация
 - Поля price_per_day_at_rent и coefficient_at_rent являются историческими снимками значений на момент создания аренды. Это необходимо, чтобы последующее изменение справочной цены автомобиля или коэффициентов не влияло на уже оформленные аренды и финансовые расчеты.
@@ -1304,9 +1304,17 @@ where not exists (select 1 from "Rental" r where r.car_id = c.id);
 -- ===================================================================================================================
 -- 2. Поиск свободных машин
 -- ===================================================================================================================
-select * from "Car" c
-where c.id in (select r.car_id from "Rental" r where r.status = 'completed') 
-and c.technical_status = 'operational';
+select c.*
+from "Car" c
+join (
+    select distinct on (r.car_id)
+        r.car_id,
+        r.status
+    from "Rental" r
+    order by r.car_id, r.end_date desc
+) last_r on last_r.car_id = c.id
+where c.technical_status = 'operational'
+  and last_r.status = 'completed';
 
 
 
@@ -1362,6 +1370,8 @@ order by r.end_date;
 -- ===================================================================================================================
 -- 2. Какие клиенты c авариями и сумма ремонта по их авариям
 -- ===================================================================================================================
+VACUUM (ANALYZE);
+
 select 
 	u.id, 
 	p.first_name, 
@@ -1430,3 +1440,1434 @@ from "Car" c
 join "Rental" r on c.id = r.car_id
 group by c.model_name
 ```
+
+1. VACUUM ANALYZE после сидинга.
+2. Один прогревочный запуск.
+3. Три измерительных запуска.
+4. Записать Execution Time.
+5. Посмотреть тип доступа: Seq Scan / Index Scan.
+6. Посмотреть actual rows, loops, buffers, temp.
+7. Сравнить объемы 10 000 и 1 000 000.
+8. Сделать вывод как аналитик: риск, причина, рекомендация.
+
+### Запрос для таблицы 5
+
+```sql
+SELECT name, setting, unit, source
+FROM pg_settings
+WHERE name IN (
+    'shared_buffers',
+    'work_mem',
+    'effective_cache_size',
+    'random_page_cost',
+    'seq_page_cost',
+    'max_parallel_workers_per_gather',
+    'jit',
+    'plan_cache_mode',
+    'default_statistics_target',
+    'search_path'
+)
+ORDER BY name;
+```
+
+### 5. Важные настройки из pg_settings
+
+| name                            | setting         | unit | source             |
+|:--------------------------------|:----------------|:-----|:-------------------|
+| default_statistics_target	      | 100             |      | default            |
+| effective_cache_size            | 524288          | 8kB  | default            |
+| jit	                          | on	            |	   | default            |
+| max_parallel_workers_per_gather | 2	            |      | default            |
+| plan_cache_mode                 | auto            | 	   | default            |
+| random_page_cost                | 4	            |	   | default            |
+| search_path                     | "$user", public |      | default            |
+| seq_page_cost	                  | 1               |	   | default            |
+| shared_buffers	              | 16384           | 8kB  | configuration file |
+| work_mem	                      | 4096	        | kB   | default            |
+
+### Запрос для таблицы 6
+
+```sql
+SELECT
+    name,
+    setting,
+    unit,
+    source,
+    reset_val,
+    pending_restart
+FROM pg_settings
+WHERE source <> 'default'
+   OR setting <> reset_val
+ORDER BY name;
+```
+
+### 6. Важные нестандартные настройки из pg_settings
+
+| name                       | setting                                           | unit | source             | reset_val                                   | pending_restart |
+|:---------------------------|:--------------------------------------------------|:-----|:-------------------|:--------------------------------------------|:----------------|
+| DateStyle                  | ISO, MDY                                          |      | client             | ISO, MDY                                    | false           |
+| TimeZone                   | Europe/Moscow                                     |      | client             | Europe/Moscow                               | false           |
+| application_name           | DBeaver 26.2.0 - SQLEditor <analytics_queries.sql>|      | session            |                                             | false           |
+| archive_command            | (disabled)                                        |      | default            |                                             | false           |
+| autovacuum_worker_slots    | 16                                                |      | configuration file | 16                                          | false           |
+| client_encoding            | UTF8                                              |      | client             | UTF8                                        | false           |
+| config_file                | /Library/PostgreSQL/18/data/postgresql.conf       |      | override           | /Library/PostgreSQL/18/data/postgresql.conf | false           |
+| data_directory             | /Library/PostgreSQL/18/data                       |      | override           | /Library/PostgreSQL/18/data                 | false           |
+| data_directory_mode        | 0700                                              |      | default            | 448                                         | false           |
+| default_text_search_config | pg_catalog.english                                |      | configuration file | pg_catalog.english                          | false           |
+| dynamic_shared_memory_type | posix                                             |      | configuration file | posix                                       | false           |
+| hba_file                   | /Library/PostgreSQL/18/data/pg_hba.conf           |      | override           | /Library/PostgreSQL/18/data/pg_hba.conf     | false           |
+| ident_file                 | /Library/PostgreSQL/18/data/pg_ident.conf         |      | override           | /Library/PostgreSQL/18/data/pg_ident.conf   | false           |
+| lc_messages                | C                                                 |      | configuration file | C                                           | false           |
+| lc_monetary                | C                                                 |      | configuration file | C                                           | false           |
+| lc_numeric                 | C                                                 |      | configuration file | C                                           | false           |
+| lc_time                    | C                                                 |      | configuration file | C                                           | false           |
+| listen_addresses           | *                                                 |      | configuration file | *                                           | false           |
+| log_destination            | stderr                                            |      | configuration file | stderr                                      | false           |
+| log_file_mode              | 0600                                              |      | default            | 384                                         | false           |
+| log_timezone               | Europe/Moscow                                     |      | configuration file | Europe/Moscow                               | false           |
+| logging_collector          | on                                                |      | configuration file | on                                          | false           |
+| max_connections            | 100                                               |      | configuration file | 100                                         | false           |
+| max_wal_size               | 1024                                              | MB   | configuration file | 1024                                        | false           |
+| min_wal_size               | 80                                                | MB   | configuration file | 80                                          | false           |
+| port                       | 5432                                              |      | configuration file | 5432                                        | false           |
+| shared_buffers             | 16384                                             | 8kB  | configuration file | 16384                                       | false           |
+| tcp_keepalives_count       | 8                                                 |      | default            | 0                                           | false           |
+| tcp_keepalives_idle        | 7200                                              | s    | default            | 0                                           | false           |
+| tcp_keepalives_interval    | 75                                                | s    | default            | 0                                           | false           |
+| transaction_deferrable     | off                                               |      | override           | off                                         | false           |
+| transaction_isolation      | read committed                                    |      | override           | read committed                              | false           |
+| transaction_read_only      | off                                               |      | override           | off                                         | false           |
+| unix_socket_permissions    | 0777                                              |      | default            | 511                                         | false           | 
+
+
+### Запрос для таблицы 7
+
+```sql
+select
+    schemaname,
+    tablename,
+    indexname,
+    indexdef
+from pg_indexes
+where schemaname = 'public'
+order by tablename, indexname;
+```
+
+### 7. Какие индексы существуют
+
+| schemaname | tablename | indexname              | indexdef                                                                                  |
+|:-----------|:----------|:-----------------------|:------------------------------------------------------------------------------------------|
+| public     | Accident  | Accident_pkey          | CREATE UNIQUE INDEX "Accident_pkey" ON public."Accident" USING btree (id)                 |
+| public     | Accident  | Accident_rental_id_key | CREATE UNIQUE INDEX "Accident_rental_id_key" ON public."Accident" USING btree (rental_id) |
+| public     | Car       | Car_license_plate_key  | CREATE UNIQUE INDEX "Car_license_plate_key" ON public."Car" USING btree (license_plate)   |
+| public     | Car       | Car_pkey               | CREATE UNIQUE INDEX "Car_pkey" ON public."Car" USING btree (id)                           |
+| public     | Car       | Car_vin_key            | CREATE UNIQUE INDEX "Car_vin_key" ON public."Car" USING btree (vin)                       |
+| public     | Profile   | Profile_email_key      | CREATE UNIQUE INDEX "Profile_email_key" ON public."Profile" USING btree (email)           |
+| public     | Profile   | Profile_pkey           | CREATE UNIQUE INDEX "Profile_pkey" ON public."Profile" USING btree (id)                   |
+| public     | Profile   | Profile_user_id_key    | CREATE UNIQUE INDEX "Profile_user_id_key" ON public."Profile" USING btree (user_id)       |
+| public     | Rental    | Rental_pkey            | CREATE UNIQUE INDEX "Rental_pkey" ON public."Rental" USING btree (id)                     |
+| public     | User      | User_phone_number_key  | CREATE UNIQUE INDEX "User_phone_number_key" ON public."User" USING btree (phone_number)   |
+| public     | User      | User_pkey              | CREATE UNIQUE INDEX "User_pkey" ON public."User" USING btree (id)                         | 
+
+
+### Поиск активных аренд
+#### 10 000
+
+| Запрос               | Объем  | Индекс | Planning Time  | Execution Time | План     | Проблема | Вывод |
+|:---------------------|:-------|:-------|:---------------|:---------------|:---------|:---------|:------|
+| Поиск активных аренд | 10 000 | нет    | 0.585 ms       | 0.824 ms       |          |          |       |
+| Поиск активных аренд | 10 000 | нет    |                |                |          |          |       |
+| Поиск активных аренд | 10 000 | нет    |                |                |          |          |       |
+
+Hash Right Semi Join  (cost=7.50..299.01 rows=2 width=63) (actual time=0.758..0.760 rows=2.00 loops=1)
+  Hash Cond: (r.car_id = c.id)
+  Buffers: shared hit=172
+  ->  Seq Scan on "Rental" r  (cost=0.00..291.50 rows=2 width=16) (actual time=0.711..0.711 rows=2.00 loops=1)
+        Filter: (status = 'active'::rental_status_enum)
+        Rows Removed by Filter: 9798
+        Buffers: shared hit=169
+  ->  Hash  (cost=5.00..5.00 rows=200 width=63) (actual time=0.038..0.038 rows=200.00 loops=1)
+        Buckets: 1024  Batches: 1  Memory Usage: 28kB
+        Buffers: shared hit=3
+        ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=63) (actual time=0.004..0.016 rows=200.00 loops=1)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.280 ms
+Execution Time: 0.786 ms
+
+Hash Right Semi Join  (cost=7.50..299.01 rows=2 width=63) (actual time=0.818..0.820 rows=2.00 loops=1)
+  Hash Cond: (r.car_id = c.id)
+  Buffers: shared hit=172
+  ->  Seq Scan on "Rental" r  (cost=0.00..291.50 rows=2 width=16) (actual time=0.768..0.769 rows=2.00 loops=1)
+        Filter: (status = 'active'::rental_status_enum)
+        Rows Removed by Filter: 9798
+        Buffers: shared hit=169
+  ->  Hash  (cost=5.00..5.00 rows=200 width=63) (actual time=0.039..0.039 rows=200.00 loops=1)
+        Buckets: 1024  Batches: 1  Memory Usage: 28kB
+        Buffers: shared hit=3
+        ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=63) (actual time=0.004..0.016 rows=200.00 loops=1)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.163 ms
+Execution Time: 0.846 ms
+
+Hash Right Semi Join  (cost=7.50..299.01 rows=2 width=63) (actual time=0.806..0.808 rows=2.00 loops=1)
+  Hash Cond: (r.car_id = c.id)
+  Buffers: shared hit=172
+  ->  Seq Scan on "Rental" r  (cost=0.00..291.50 rows=2 width=16) (actual time=0.751..0.751 rows=2.00 loops=1)
+        Filter: (status = 'active'::rental_status_enum)
+        Rows Removed by Filter: 9798
+        Buffers: shared hit=169
+  ->  Hash  (cost=5.00..5.00 rows=200 width=63) (actual time=0.043..0.043 rows=200.00 loops=1)
+        Buckets: 1024  Batches: 1  Memory Usage: 28kB
+        Buffers: shared hit=3
+        ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=63) (actual time=0.003..0.017 rows=200.00 loops=1)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.142 ms
+Execution Time: 0.840 ms
+
+#### 1 000 000
+
+QUERY PLAN                                                                                                                          |
+------------------------------------------------------------------------------------------------------------------------------------+
+Hash Right Semi Join  (cost=1653.20..26031.86 rows=289 width=63) (actual time=41.914..56.471 rows=193.00 loops=1)                   |
+  Hash Cond: (r.car_id = c.id)                                                                                                      |
+  Buffers: shared hit=12489 read=6443                                                                                               |
+  ->  Gather  (cost=1000.00..25377.86 rows=289 width=16) (actual time=38.066..52.486 rows=193.00 loops=1)                           |
+        Workers Planned: 2                                                                                                          |
+        Workers Launched: 2                                                                                                         |
+        Buffers: shared hit=12257 read=6443                                                                                         |
+        ->  Parallel Seq Scan on "Rental" r  (cost=0.00..24348.96 rows=120 width=16) (actual time=32.223..43.354 rows=64.33 loops=3)|
+              Filter: (status = 'active'::rental_status_enum)                                                                       |
+              Rows Removed by Filter: 361469                                                                                        |
+              Buffers: shared hit=12257 read=6443                                                                                   |
+  ->  Hash  (cost=419.20..419.20 rows=18720 width=63) (actual time=3.834..3.837 rows=18720.00 loops=1)                              |
+        Buckets: 32768  Batches: 1  Memory Usage: 2085kB                                                                            |
+        Buffers: shared hit=232                                                                                                     |
+        ->  Seq Scan on "Car" c  (cost=0.00..419.20 rows=18720 width=63) (actual time=0.007..1.184 rows=18720.00 loops=1)           |
+              Buffers: shared hit=232                                                                                               |
+Planning:                                                                                                                           |
+  Buffers: shared hit=6                                                                                                             |
+Planning Time: 0.130 ms                                                                                                             |
+Execution Time: 56.928 ms                                                                                                           |
+
+QUERY PLAN                                                                                                                          |
+------------------------------------------------------------------------------------------------------------------------------------+
+Hash Right Semi Join  (cost=1653.20..26031.86 rows=289 width=63) (actual time=39.260..51.544 rows=193.00 loops=1)                   |
+  Hash Cond: (r.car_id = c.id)                                                                                                      |
+  Buffers: shared hit=12771 read=6161                                                                                               |
+  ->  Gather  (cost=1000.00..25377.86 rows=289 width=16) (actual time=35.415..47.549 rows=193.00 loops=1)                           |
+        Workers Planned: 2                                                                                                          |
+        Workers Launched: 2                                                                                                         |
+        Buffers: shared hit=12539 read=6161                                                                                         |
+        ->  Parallel Seq Scan on "Rental" r  (cost=0.00..24348.96 rows=120 width=16) (actual time=32.249..41.433 rows=64.33 loops=3)|
+              Filter: (status = 'active'::rental_status_enum)                                                                       |
+              Rows Removed by Filter: 361469                                                                                        |
+              Buffers: shared hit=12539 read=6161                                                                                   |
+  ->  Hash  (cost=419.20..419.20 rows=18720 width=63) (actual time=3.831..3.832 rows=18720.00 loops=1)                              |
+        Buckets: 32768  Batches: 1  Memory Usage: 2085kB                                                                            |
+        Buffers: shared hit=232                                                                                                     |
+        ->  Seq Scan on "Car" c  (cost=0.00..419.20 rows=18720 width=63) (actual time=0.006..1.184 rows=18720.00 loops=1)           |
+              Buffers: shared hit=232                                                                                               |
+Planning:                                                                                                                           |
+  Buffers: shared hit=6                                                                                                             |
+Planning Time: 0.135 ms                                                                                                             |
+Execution Time: 51.793 ms                                                                                                           |
+
+QUERY PLAN                                                                                                                          |
+------------------------------------------------------------------------------------------------------------------------------------+
+Hash Right Semi Join  (cost=1653.20..26031.86 rows=289 width=63) (actual time=38.867..51.897 rows=193.00 loops=1)                   |
+  Hash Cond: (r.car_id = c.id)                                                                                                      |
+  Buffers: shared hit=13053 read=5879                                                                                               |
+  ->  Gather  (cost=1000.00..25377.86 rows=289 width=16) (actual time=34.619..47.534 rows=193.00 loops=1)                           |
+        Workers Planned: 2                                                                                                          |
+        Workers Launched: 2                                                                                                         |
+        Buffers: shared hit=12821 read=5879                                                                                         |
+        ->  Parallel Seq Scan on "Rental" r  (cost=0.00..24348.96 rows=120 width=16) (actual time=31.555..41.428 rows=64.33 loops=3)|
+              Filter: (status = 'active'::rental_status_enum)                                                                       |
+              Rows Removed by Filter: 361469                                                                                        |
+              Buffers: shared hit=12821 read=5879                                                                                   |
+  ->  Hash  (cost=419.20..419.20 rows=18720 width=63) (actual time=4.210..4.212 rows=18720.00 loops=1)                              |
+        Buckets: 32768  Batches: 1  Memory Usage: 2085kB                                                                            |
+        Buffers: shared hit=232                                                                                                     |
+        ->  Seq Scan on "Car" c  (cost=0.00..419.20 rows=18720 width=63) (actual time=0.009..1.248 rows=18720.00 loops=1)           |
+              Buffers: shared hit=232                                                                                               |
+Planning:                                                                                                                           |
+  Buffers: shared hit=6                                                                                                             |
+Planning Time: 0.157 ms                                                                                                             |
+Execution Time: 52.178 ms                                                                                                           |
+
+### Поиск модели автомобиля с самой высокой выручкой
+#### 10 000
+
+| Запрос                                           | Объем  | Индекс | Planning Time  | Execution Time | План     | Проблема | Вывод |
+|:-------------------------------------------------|:-------|:-------|:---------------|:---------------|:---------|:---------|:------|
+| Поиск модели автомобиля с самой высокой выручкой | 10 000 | нет    | 0.133 ms       | 4.528 ms       |          |          |       |
+| Поиск модели автомобиля с самой высокой выручкой | 10 000 | нет    |                |                |          |          |       |
+| Поиск модели автомобиля с самой высокой выручкой | 10 000 | нет    |                |                |          |          |       |
+
+HashAggregate  (cost=398.77..398.83 rows=5 width=44) (actual time=4.448..4.451 rows=5.00 loops=1)
+  Group Key: c.model_name
+  Batches: 1  Memory Usage: 32kB
+  Buffers: shared hit=172
+  ->  Hash Join  (cost=7.50..300.77 rows=9800 width=36) (actual time=0.078..3.037 rows=9800.00 loops=1)
+        Hash Cond: (r.car_id = c.id)
+        Buffers: shared hit=172
+        ->  Seq Scan on "Rental" r  (cost=0.00..267.00 rows=9800 width=48) (actual time=0.008..0.688 rows=9800.00 loops=1)
+              Buffers: shared hit=169
+        ->  Hash  (cost=5.00..5.00 rows=200 width=20) (actual time=0.058..0.058 rows=200.00 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 19kB
+              Buffers: shared hit=3
+              ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=20) (actual time=0.007..0.029 rows=200.00 loops=1)
+                    Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.142 ms
+Execution Time: 4.507 ms
+
+HashAggregate  (cost=398.77..398.83 rows=5 width=44) (actual time=4.689..4.692 rows=5.00 loops=1)
+  Group Key: c.model_name
+  Batches: 1  Memory Usage: 32kB
+  Buffers: shared hit=172
+  ->  Hash Join  (cost=7.50..300.77 rows=9800 width=36) (actual time=0.064..3.064 rows=9800.00 loops=1)
+        Hash Cond: (r.car_id = c.id)
+        Buffers: shared hit=172
+        ->  Seq Scan on "Rental" r  (cost=0.00..267.00 rows=9800 width=48) (actual time=0.006..0.683 rows=9800.00 loops=1)
+              Buffers: shared hit=169
+        ->  Hash  (cost=5.00..5.00 rows=200 width=20) (actual time=0.054..0.054 rows=200.00 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 19kB
+              Buffers: shared hit=3
+              ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=20) (actual time=0.004..0.025 rows=200.00 loops=1)
+                    Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.127 ms
+Execution Time: 4.723 ms
+
+HashAggregate  (cost=398.77..398.83 rows=5 width=44) (actual time=4.300..4.303 rows=5.00 loops=1)
+  Group Key: c.model_name
+  Batches: 1  Memory Usage: 32kB
+  Buffers: shared hit=172
+  ->  Hash Join  (cost=7.50..300.77 rows=9800 width=36) (actual time=0.064..2.952 rows=9800.00 loops=1)
+        Hash Cond: (r.car_id = c.id)
+        Buffers: shared hit=172
+        ->  Seq Scan on "Rental" r  (cost=0.00..267.00 rows=9800 width=48) (actual time=0.007..0.659 rows=9800.00 loops=1)
+              Buffers: shared hit=169
+        ->  Hash  (cost=5.00..5.00 rows=200 width=20) (actual time=0.054..0.054 rows=200.00 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 19kB
+              Buffers: shared hit=3
+              ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=20) (actual time=0.004..0.026 rows=200.00 loops=1)
+                    Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.131 ms
+Execution Time: 4.353 ms
+
+#### 1 000 000
+
+QUERY PLAN                                                                                                                                                  |
+------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Finalize GroupAggregate  (cost=30578.23..30579.81 rows=5 width=44) (actual time=200.423..200.549 rows=5.00 loops=1)                                         |
+  Group Key: c.model_name                                                                                                                                   |
+  Buffers: shared hit=14097 read=5315                                                                                                                       |
+  ->  Gather Merge  (cost=30578.23..30579.63 rows=12 width=44) (actual time=200.410..200.533 rows=15.00 loops=1)                                            |
+        Workers Planned: 2                                                                                                                                  |
+        Workers Launched: 2                                                                                                                                 |
+        Buffers: shared hit=14097 read=5315                                                                                                                 |
+        ->  Sort  (cost=29578.21..29578.22 rows=5 width=44) (actual time=193.219..193.221 rows=5.00 loops=3)                                                |
+              Sort Key: c.model_name                                                                                                                        |
+              Sort Method: quicksort  Memory: 25kB                                                                                                          |
+              Buffers: shared hit=14097 read=5315                                                                                                           |
+              Worker 0:  Sort Method: quicksort  Memory: 25kB                                                                                               |
+              Worker 1:  Sort Method: quicksort  Memory: 25kB                                                                                               |
+              ->  Partial HashAggregate  (cost=29578.09..29578.15 rows=5 width=44) (actual time=193.195..193.198 rows=5.00 loops=3)                         |
+                    Group Key: c.model_name                                                                                                                 |
+                    Batches: 1  Memory Usage: 32kB                                                                                                          |
+                    Buffers: shared hit=14081 read=5315                                                                                                     |
+                    Worker 0:  Batches: 1  Memory Usage: 32kB                                                                                               |
+                    Worker 1:  Batches: 1  Memory Usage: 32kB                                                                                               |
+                    ->  Hash Join  (cost=653.20..25058.92 rows=451917 width=36) (actual time=5.992..139.784 rows=361533.33 loops=3)                         |
+                          Hash Cond: (r.car_id = c.id)                                                                                                      |
+                          Buffers: shared hit=14081 read=5315                                                                                               |
+                          ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=48) (actual time=0.074..40.165 rows=361533.33 loops=3)|
+                                Buffers: shared hit=13385 read=5315                                                                                         |
+                          ->  Hash  (cost=419.20..419.20 rows=18720 width=20) (actual time=5.810..5.810 rows=18720.00 loops=3)                              |
+                                Buckets: 32768  Batches: 1  Memory Usage: 1207kB                                                                            |
+                                Buffers: shared hit=696                                                                                                     |
+                                ->  Seq Scan on "Car" c  (cost=0.00..419.20 rows=18720 width=20) (actual time=0.034..2.582 rows=18720.00 loops=3)           |
+                                      Buffers: shared hit=696                                                                                               |
+Planning:                                                                                                                                                   |
+  Buffers: shared hit=6                                                                                                                                     |
+Planning Time: 0.218 ms                                                                                                                                     |
+Execution Time: 200.724 ms                                                                                                                                  |
+
+QUERY PLAN                                                                                                                                                  |
+------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Finalize GroupAggregate  (cost=30578.23..30579.81 rows=5 width=44) (actual time=195.980..199.392 rows=5.00 loops=1)                                         |
+  Group Key: c.model_name                                                                                                                                   |
+  Buffers: shared hit=14379 read=5033                                                                                                                       |
+  ->  Gather Merge  (cost=30578.23..30579.63 rows=12 width=44) (actual time=195.971..199.379 rows=15.00 loops=1)                                            |
+        Workers Planned: 2                                                                                                                                  |
+        Workers Launched: 2                                                                                                                                 |
+        Buffers: shared hit=14379 read=5033                                                                                                                 |
+        ->  Sort  (cost=29578.21..29578.22 rows=5 width=44) (actual time=192.447..192.449 rows=5.00 loops=3)                                                |
+              Sort Key: c.model_name                                                                                                                        |
+              Sort Method: quicksort  Memory: 25kB                                                                                                          |
+              Buffers: shared hit=14379 read=5033                                                                                                           |
+              Worker 0:  Sort Method: quicksort  Memory: 25kB                                                                                               |
+              Worker 1:  Sort Method: quicksort  Memory: 25kB                                                                                               |
+              ->  Partial HashAggregate  (cost=29578.09..29578.15 rows=5 width=44) (actual time=192.421..192.424 rows=5.00 loops=3)                         |
+                    Group Key: c.model_name                                                                                                                 |
+                    Batches: 1  Memory Usage: 32kB                                                                                                          |
+                    Buffers: shared hit=14363 read=5033                                                                                                     |
+                    Worker 0:  Batches: 1  Memory Usage: 32kB                                                                                               |
+                    Worker 1:  Batches: 1  Memory Usage: 32kB                                                                                               |
+                    ->  Hash Join  (cost=653.20..25058.92 rows=451917 width=36) (actual time=5.754..139.295 rows=361533.33 loops=3)                         |
+                          Hash Cond: (r.car_id = c.id)                                                                                                      |
+                          Buffers: shared hit=14363 read=5033                                                                                               |
+                          ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=48) (actual time=0.086..39.886 rows=361533.33 loops=3)|
+                                Buffers: shared hit=13667 read=5033                                                                                         |
+                          ->  Hash  (cost=419.20..419.20 rows=18720 width=20) (actual time=5.562..5.562 rows=18720.00 loops=3)                              |
+                                Buckets: 32768  Batches: 1  Memory Usage: 1207kB                                                                            |
+                                Buffers: shared hit=696                                                                                                     |
+                                ->  Seq Scan on "Car" c  (cost=0.00..419.20 rows=18720 width=20) (actual time=0.032..2.511 rows=18720.00 loops=3)           |
+                                      Buffers: shared hit=696                                                                                               |
+Planning:                                                                                                                                                   |
+  Buffers: shared hit=6                                                                                                                                     |
+Planning Time: 0.135 ms                                                                                                                                     |
+Execution Time: 199.540 ms                                                                                                                                  |
+
+QUERY PLAN                                                                                                                                                  |
+------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Finalize GroupAggregate  (cost=30578.23..30579.81 rows=5 width=44) (actual time=197.750..201.265 rows=5.00 loops=1)                                         |
+  Group Key: c.model_name                                                                                                                                   |
+  Buffers: shared hit=14661 read=4751                                                                                                                       |
+  ->  Gather Merge  (cost=30578.23..30579.63 rows=12 width=44) (actual time=197.741..201.252 rows=15.00 loops=1)                                            |
+        Workers Planned: 2                                                                                                                                  |
+        Workers Launched: 2                                                                                                                                 |
+        Buffers: shared hit=14661 read=4751                                                                                                                 |
+        ->  Sort  (cost=29578.21..29578.22 rows=5 width=44) (actual time=194.159..194.161 rows=5.00 loops=3)                                                |
+              Sort Key: c.model_name                                                                                                                        |
+              Sort Method: quicksort  Memory: 25kB                                                                                                          |
+              Buffers: shared hit=14661 read=4751                                                                                                           |
+              Worker 0:  Sort Method: quicksort  Memory: 25kB                                                                                               |
+              Worker 1:  Sort Method: quicksort  Memory: 25kB                                                                                               |
+              ->  Partial HashAggregate  (cost=29578.09..29578.15 rows=5 width=44) (actual time=194.132..194.135 rows=5.00 loops=3)                         |
+                    Group Key: c.model_name                                                                                                                 |
+                    Batches: 1  Memory Usage: 32kB                                                                                                          |
+                    Buffers: shared hit=14645 read=4751                                                                                                     |
+                    Worker 0:  Batches: 1  Memory Usage: 32kB                                                                                               |
+                    Worker 1:  Batches: 1  Memory Usage: 32kB                                                                                               |
+                    ->  Hash Join  (cost=653.20..25058.92 rows=451917 width=36) (actual time=5.941..140.646 rows=361533.33 loops=3)                         |
+                          Hash Cond: (r.car_id = c.id)                                                                                                      |
+                          Buffers: shared hit=14645 read=4751                                                                                               |
+                          ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=48) (actual time=0.077..39.506 rows=361533.33 loops=3)|
+                                Buffers: shared hit=13949 read=4751                                                                                         |
+                          ->  Hash  (cost=419.20..419.20 rows=18720 width=20) (actual time=5.741..5.741 rows=18720.00 loops=3)                              |
+                                Buckets: 32768  Batches: 1  Memory Usage: 1207kB                                                                            |
+                                Buffers: shared hit=696                                                                                                     |
+                                ->  Seq Scan on "Car" c  (cost=0.00..419.20 rows=18720 width=20) (actual time=0.052..2.629 rows=18720.00 loops=3)           |
+                                      Buffers: shared hit=696                                                                                               |
+Planning:                                                                                                                                                   |
+  Buffers: shared hit=6                                                                                                                                     |
+Planning Time: 0.152 ms                                                                                                                                     |
+Execution Time: 201.432 ms                                                                                                                                  |
+
+### Поиск аренд заканчиваюхихся сегодня
+#### 10 000
+
+| Запрос                              | Объем  | Индекс | Planning Time  | Execution Time | План     | Проблема | Вывод |
+|:------------------------------------|:-------|:-------|:---------------|:---------------|:---------|:---------|:------|
+| Поиск аренд заканчиваюхихся сегодня | 10 000 | нет    | 0.197 ms       | 0.866 ms       |          |          |       |
+| Поиск аренд заканчиваюхихся сегодня | 10 000 | нет    |                |                |          |          |       |
+| Поиск аренд заканчиваюхихся сегодня | 10 000 | нет    |                |                |          |          |       |
+
+Nested Loop  (cost=0.00..380.46 rows=1 width=53) (actual time=0.804..0.840 rows=2.00 loops=1)
+  Join Filter: (u.id = r.user_id)
+  Rows Removed by Join Filter: 224
+  Buffers: shared hit=182
+  ->  Nested Loop  (cost=0.00..372.50 rows=1 width=57) (actual time=0.777..0.798 rows=2.00 loops=1)
+        Join Filter: (c.id = r.car_id)
+        Rows Removed by Join Filter: 248
+        Buffers: shared hit=175
+        ->  Seq Scan on "Rental" r  (cost=0.00..365.00 rows=1 width=56) (actual time=0.753..0.754 rows=2.00 loops=1)
+              Filter: ((status = 'active'::rental_status_enum) AND ((end_date)::date = CURRENT_DATE))
+              Rows Removed by Filter: 9798
+              Buffers: shared hit=169
+        ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=33) (actual time=0.002..0.009 rows=125.00 loops=2)
+              Buffers: shared hit=6
+  ->  Seq Scan on "User" u  (cost=0.00..5.76 rows=176 width=28) (actual time=0.004..0.010 rows=113.00 loops=2)
+        Buffers: shared hit=7
+Planning:
+  Buffers: shared hit=8
+Planning Time: 0.195 ms
+Execution Time: 0.861 ms
+
+Nested Loop  (cost=0.00..380.46 rows=1 width=53) (actual time=0.804..0.840 rows=2.00 loops=1)
+  Join Filter: (u.id = r.user_id)
+  Rows Removed by Join Filter: 224
+  Buffers: shared hit=182
+  ->  Nested Loop  (cost=0.00..372.50 rows=1 width=57) (actual time=0.780..0.801 rows=2.00 loops=1)
+        Join Filter: (c.id = r.car_id)
+        Rows Removed by Join Filter: 248
+        Buffers: shared hit=175
+        ->  Seq Scan on "Rental" r  (cost=0.00..365.00 rows=1 width=56) (actual time=0.757..0.758 rows=2.00 loops=1)
+              Filter: ((status = 'active'::rental_status_enum) AND ((end_date)::date = CURRENT_DATE))
+              Rows Removed by Filter: 9798
+              Buffers: shared hit=169
+        ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=33) (actual time=0.002..0.009 rows=125.00 loops=2)
+              Buffers: shared hit=6
+  ->  Seq Scan on "User" u  (cost=0.00..5.76 rows=176 width=28) (actual time=0.002..0.009 rows=113.00 loops=2)
+        Buffers: shared hit=7
+Planning:
+  Buffers: shared hit=8
+Planning Time: 0.180 ms
+Execution Time: 0.859 ms
+
+Nested Loop  (cost=0.00..380.46 rows=1 width=53) (actual time=0.808..0.861 rows=2.00 loops=1)
+  Join Filter: (u.id = r.user_id)
+  Rows Removed by Join Filter: 224
+  Buffers: shared hit=182
+  ->  Nested Loop  (cost=0.00..372.50 rows=1 width=57) (actual time=0.781..0.804 rows=2.00 loops=1)
+        Join Filter: (c.id = r.car_id)
+        Rows Removed by Join Filter: 248
+        Buffers: shared hit=175
+        ->  Seq Scan on "Rental" r  (cost=0.00..365.00 rows=1 width=56) (actual time=0.751..0.752 rows=2.00 loops=1)
+              Filter: ((status = 'active'::rental_status_enum) AND ((end_date)::date = CURRENT_DATE))
+              Rows Removed by Filter: 9798
+              Buffers: shared hit=169
+        ->  Seq Scan on "Car" c  (cost=0.00..5.00 rows=200 width=33) (actual time=0.004..0.012 rows=125.00 loops=2)
+              Buffers: shared hit=6
+  ->  Seq Scan on "User" u  (cost=0.00..5.76 rows=176 width=28) (actual time=0.002..0.009 rows=113.00 loops=2)
+        Buffers: shared hit=7
+Planning:
+  Buffers: shared hit=8
+Planning Time: 0.217 ms
+Execution Time: 0.879 ms
+
+#### 1 000 000
+
+QUERY PLAN                                                                                                                             |
+---------------------------------------------------------------------------------------------------------------------------------------+
+Nested Loop  (cost=1000.57..28755.04 rows=1 width=53) (actual time=43.709..46.916 rows=0.00 loops=1)                                   |
+  Buffers: shared hit=14325 read=4375                                                                                                  |
+  ->  Nested Loop  (cost=1000.29..28746.74 rows=1 width=57) (actual time=43.709..46.916 rows=0.00 loops=1)                             |
+        Buffers: shared hit=14325 read=4375                                                                                            |
+        ->  Gather  (cost=1000.00..28738.43 rows=1 width=56) (actual time=43.708..46.915 rows=0.00 loops=1)                            |
+              Workers Planned: 2                                                                                                       |
+              Workers Launched: 2                                                                                                      |
+              Buffers: shared hit=14325 read=4375                                                                                      |
+              ->  Parallel Seq Scan on "Rental" r  (cost=0.00..27738.33 rows=1 width=56) (actual time=40.499..40.499 rows=0.00 loops=3)|
+                    Filter: ((status = 'active'::rental_status_enum) AND ((end_date)::date = CURRENT_DATE))                            |
+                    Rows Removed by Filter: 361533                                                                                     |
+                    Buffers: shared hit=14325 read=4375                                                                                |
+        ->  Index Scan using "Car_pkey" on "Car" c  (cost=0.29..8.30 rows=1 width=33) (never executed)                                 |
+              Index Cond: (id = r.car_id)                                                                                              |
+              Index Searches: 0                                                                                                        |
+  ->  Index Scan using "User_pkey" on "User" u  (cost=0.28..8.30 rows=1 width=28) (never executed)                                     |
+        Index Cond: (id = r.user_id)                                                                                                   |
+        Index Searches: 0                                                                                                              |
+Planning:                                                                                                                              |
+  Buffers: shared hit=12                                                                                                               |
+Planning Time: 0.174 ms                                                                                                                |
+Execution Time: 46.938 ms                                                                                                              |
+
+QUERY PLAN                                                                                                                             |
+---------------------------------------------------------------------------------------------------------------------------------------+
+Nested Loop  (cost=1000.57..28755.04 rows=1 width=53) (actual time=44.574..48.090 rows=0.00 loops=1)                                   |
+  Buffers: shared hit=14607 read=4093                                                                                                  |
+  ->  Nested Loop  (cost=1000.29..28746.74 rows=1 width=57) (actual time=44.573..48.089 rows=0.00 loops=1)                             |
+        Buffers: shared hit=14607 read=4093                                                                                            |
+        ->  Gather  (cost=1000.00..28738.43 rows=1 width=56) (actual time=44.573..48.088 rows=0.00 loops=1)                            |
+              Workers Planned: 2                                                                                                       |
+              Workers Launched: 2                                                                                                      |
+              Buffers: shared hit=14607 read=4093                                                                                      |
+              ->  Parallel Seq Scan on "Rental" r  (cost=0.00..27738.33 rows=1 width=56) (actual time=40.848..40.849 rows=0.00 loops=3)|
+                    Filter: ((status = 'active'::rental_status_enum) AND ((end_date)::date = CURRENT_DATE))                            |
+                    Rows Removed by Filter: 361533                                                                                     |
+                    Buffers: shared hit=14607 read=4093                                                                                |
+        ->  Index Scan using "Car_pkey" on "Car" c  (cost=0.29..8.30 rows=1 width=33) (never executed)                                 |
+              Index Cond: (id = r.car_id)                                                                                              |
+              Index Searches: 0                                                                                                        |
+  ->  Index Scan using "User_pkey" on "User" u  (cost=0.28..8.30 rows=1 width=28) (never executed)                                     |
+        Index Cond: (id = r.user_id)                                                                                                   |
+        Index Searches: 0                                                                                                              |
+Planning:                                                                                                                              |
+  Buffers: shared hit=12                                                                                                               |
+Planning Time: 0.167 ms                                                                                                                |
+Execution Time: 48.126 ms                                                                                                              |
+
+QUERY PLAN                                                                                                                             |
+---------------------------------------------------------------------------------------------------------------------------------------+
+Nested Loop  (cost=1000.57..28755.04 rows=1 width=53) (actual time=43.932..47.051 rows=0.00 loops=1)                                   |
+  Buffers: shared hit=14889 read=3811                                                                                                  |
+  ->  Nested Loop  (cost=1000.29..28746.74 rows=1 width=57) (actual time=43.932..47.051 rows=0.00 loops=1)                             |
+        Buffers: shared hit=14889 read=3811                                                                                            |
+        ->  Gather  (cost=1000.00..28738.43 rows=1 width=56) (actual time=43.931..47.049 rows=0.00 loops=1)                            |
+              Workers Planned: 2                                                                                                       |
+              Workers Launched: 2                                                                                                      |
+              Buffers: shared hit=14889 read=3811                                                                                      |
+              ->  Parallel Seq Scan on "Rental" r  (cost=0.00..27738.33 rows=1 width=56) (actual time=40.654..40.654 rows=0.00 loops=3)|
+                    Filter: ((status = 'active'::rental_status_enum) AND ((end_date)::date = CURRENT_DATE))                            |
+                    Rows Removed by Filter: 361533                                                                                     |
+                    Buffers: shared hit=14889 read=3811                                                                                |
+        ->  Index Scan using "Car_pkey" on "Car" c  (cost=0.29..8.30 rows=1 width=33) (never executed)                                 |
+              Index Cond: (id = r.car_id)                                                                                              |
+              Index Searches: 0                                                                                                        |
+  ->  Index Scan using "User_pkey" on "User" u  (cost=0.28..8.30 rows=1 width=28) (never executed)                                     |
+        Index Cond: (id = r.user_id)                                                                                                   |
+        Index Searches: 0                                                                                                              |
+Planning:                                                                                                                              |
+  Buffers: shared hit=12                                                                                                               |
+Planning Time: 0.167 ms                                                                                                                |
+Execution Time: 47.074 ms                                                                                                              |
+
+
+### Какие клиенты c авариями и сумма ремонта по их авариям
+
+```sql
+select 
+	u.id, 
+	p.first_name, 
+	p.last_name, 
+	p.patronymic, 
+	u.phone_number, 
+	count(a.id) accidents_count,
+    count(a.id) filter (where a.severity = 'minor') minor_count,
+    count(a.id) filter (where a.severity = 'moderate') moderate_count,
+    count(a.id) filter (where a.severity = 'severe') severe_count,
+	sum(a.repair_price) total_repair_price 
+from "Accident" a
+join "Rental" r on a.rental_id = r.id
+join "User" u on u.id = r.user_id
+join "Profile" p on p.user_id  = u.id
+group by u.id, p.first_name, p.last_name, p.patronymic
+order by total_repair_price desc
+```
+
+#### 10 000
+
+```
+QUERY PLAN 1 
+
+Sort  (cost=804.78..813.73 rows=3579 width=137) (actual time=6.477..6.483 rows=49.00 loops=1)
+  Sort Key: (sum(a.repair_price)) DESC
+  Sort Method: quicksort  Memory: 31kB
+  Buffers: shared hit=210
+  ->  HashAggregate  (cost=548.79..593.53 rows=3579 width=137) (actual time=6.428..6.450 rows=49.00 loops=1)
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic
+        Batches: 1  Memory Usage: 105kB
+        Buffers: shared hit=210
+        ->  Hash Join  (cost=129.45..441.42 rows=3579 width=101) (actual time=1.028..5.033 rows=3579.00 loops=1)
+              Hash Cond: (u.id = p.user_id)
+              Buffers: shared hit=210
+              ->  Hash Join  (cost=122.49..424.84 rows=3579 width=72) (actual time=0.967..4.234 rows=3579.00 loops=1)
+                    Hash Cond: (r.user_id = u.id)
+                    Buffers: shared hit=207
+                    ->  Hash Join  (cost=114.53..407.26 rows=3579 width=44) (actual time=0.917..3.399 rows=3579.00 loops=1)
+                          Hash Cond: (r.id = a.rental_id)
+                          Buffers: shared hit=203
+                          ->  Seq Scan on "Rental" r  (cost=0.00..267.00 rows=9800 width=32) (actual time=0.003..0.696 rows=9800.00 loops=1)
+                                Buffers: shared hit=169
+                          ->  Hash  (cost=69.79..69.79 rows=3579 width=44) (actual time=0.909..0.910 rows=3579.00 loops=1)
+                                Buckets: 4096  Batches: 1  Memory Usage: 312kB
+                                Buffers: shared hit=34
+                                ->  Seq Scan on "Accident" a  (cost=0.00..69.79 rows=3579 width=44) (actual time=0.003..0.339 rows=3579.00 loops=1)
+                                      Buffers: shared hit=34
+                    ->  Hash  (cost=5.76..5.76 rows=176 width=28) (actual time=0.043..0.044 rows=176.00 loops=1)
+                          Buckets: 1024  Batches: 1  Memory Usage: 19kB
+                          Buffers: shared hit=4
+                          ->  Seq Scan on "User" u  (cost=0.00..5.76 rows=176 width=28) (actual time=0.003..0.021 rows=176.00 loops=1)
+                                Buffers: shared hit=4
+              ->  Hash  (cost=4.76..4.76 rows=176 width=61) (actual time=0.053..0.054 rows=176.00 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 23kB
+                    Buffers: shared hit=3
+                    ->  Seq Scan on "Profile" p  (cost=0.00..4.76 rows=176 width=61) (actual time=0.008..0.027 rows=176.00 loops=1)
+                          Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=28
+Planning Time: 0.407 ms
+Execution Time: 6.600 ms
+```
+
+```
+QUERY PLAN 2
+
+Sort  (cost=804.78..813.73 rows=3579 width=137) (actual time=6.042..6.048 rows=49.00 loops=1)
+  Sort Key: (sum(a.repair_price)) DESC
+  Sort Method: quicksort  Memory: 31kB
+  Buffers: shared hit=210
+  ->  HashAggregate  (cost=548.79..593.53 rows=3579 width=137) (actual time=6.004..6.026 rows=49.00 loops=1)
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic
+        Batches: 1  Memory Usage: 105kB
+        Buffers: shared hit=210
+        ->  Hash Join  (cost=129.45..441.42 rows=3579 width=101) (actual time=0.949..4.734 rows=3579.00 loops=1)
+              Hash Cond: (u.id = p.user_id)
+              Buffers: shared hit=210
+              ->  Hash Join  (cost=122.49..424.84 rows=3579 width=72) (actual time=0.886..3.905 rows=3579.00 loops=1)
+                    Hash Cond: (r.user_id = u.id)
+                    Buffers: shared hit=207
+                    ->  Hash Join  (cost=114.53..407.26 rows=3579 width=44) (actual time=0.834..3.150 rows=3579.00 loops=1)
+                          Hash Cond: (r.id = a.rental_id)
+                          Buffers: shared hit=203
+                          ->  Seq Scan on "Rental" r  (cost=0.00..267.00 rows=9800 width=32) (actual time=0.002..0.668 rows=9800.00 loops=1)
+                                Buffers: shared hit=169
+                          ->  Hash  (cost=69.79..69.79 rows=3579 width=44) (actual time=0.827..0.827 rows=3579.00 loops=1)
+                                Buckets: 4096  Batches: 1  Memory Usage: 312kB
+                                Buffers: shared hit=34
+                                ->  Seq Scan on "Accident" a  (cost=0.00..69.79 rows=3579 width=44) (actual time=0.003..0.350 rows=3579.00 loops=1)
+                                      Buffers: shared hit=34
+                    ->  Hash  (cost=5.76..5.76 rows=176 width=28) (actual time=0.042..0.043 rows=176.00 loops=1)
+                          Buckets: 1024  Batches: 1  Memory Usage: 19kB
+                          Buffers: shared hit=4
+                          ->  Seq Scan on "User" u  (cost=0.00..5.76 rows=176 width=28) (actual time=0.003..0.020 rows=176.00 loops=1)
+                                Buffers: shared hit=4
+              ->  Hash  (cost=4.76..4.76 rows=176 width=61) (actual time=0.052..0.052 rows=176.00 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 23kB
+                    Buffers: shared hit=3
+                    ->  Seq Scan on "Profile" p  (cost=0.00..4.76 rows=176 width=61) (actual time=0.007..0.026 rows=176.00 loops=1)
+                          Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=28
+Planning Time: 0.338 ms
+Execution Time: 6.110 ms
+```
+
+```
+QUERY PLAN 3
+
+Sort  (cost=804.78..813.73 rows=3579 width=137) (actual time=6.284..6.290 rows=49.00 loops=1)
+  Sort Key: (sum(a.repair_price)) DESC
+  Sort Method: quicksort  Memory: 31kB
+  Buffers: shared hit=210
+  ->  HashAggregate  (cost=548.79..593.53 rows=3579 width=137) (actual time=6.244..6.267 rows=49.00 loops=1)
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic
+        Batches: 1  Memory Usage: 105kB
+        Buffers: shared hit=210
+        ->  Hash Join  (cost=129.45..441.42 rows=3579 width=101) (actual time=1.018..4.947 rows=3579.00 loops=1)
+              Hash Cond: (u.id = p.user_id)
+              Buffers: shared hit=210
+              ->  Hash Join  (cost=122.49..424.84 rows=3579 width=72) (actual time=0.925..4.121 rows=3579.00 loops=1)
+                    Hash Cond: (r.user_id = u.id)
+                    Buffers: shared hit=207
+                    ->  Hash Join  (cost=114.53..407.26 rows=3579 width=44) (actual time=0.880..3.341 rows=3579.00 loops=1)
+                          Hash Cond: (r.id = a.rental_id)
+                          Buffers: shared hit=203
+                          ->  Seq Scan on "Rental" r  (cost=0.00..267.00 rows=9800 width=32) (actual time=0.003..0.680 rows=9800.00 loops=1)
+                                Buffers: shared hit=169
+                          ->  Hash  (cost=69.79..69.79 rows=3579 width=44) (actual time=0.871..0.872 rows=3579.00 loops=1)
+                                Buckets: 4096  Batches: 1  Memory Usage: 312kB
+                                Buffers: shared hit=34
+                                ->  Seq Scan on "Accident" a  (cost=0.00..69.79 rows=3579 width=44) (actual time=0.003..0.373 rows=3579.00 loops=1)
+                                      Buffers: shared hit=34
+                    ->  Hash  (cost=5.76..5.76 rows=176 width=28) (actual time=0.042..0.043 rows=176.00 loops=1)
+                          Buckets: 1024  Batches: 1  Memory Usage: 19kB
+                          Buffers: shared hit=4
+                          ->  Seq Scan on "User" u  (cost=0.00..5.76 rows=176 width=28) (actual time=0.003..0.020 rows=176.00 loops=1)
+                                Buffers: shared hit=4
+              ->  Hash  (cost=4.76..4.76 rows=176 width=61) (actual time=0.090..0.091 rows=176.00 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 23kB
+                    Buffers: shared hit=3
+                    ->  Seq Scan on "Profile" p  (cost=0.00..4.76 rows=176 width=61) (actual time=0.008..0.044 rows=176.00 loops=1)
+                          Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=28
+Planning Time: 0.317 ms
+Execution Time: 6.361 ms
+```
+
+#### 1 000 000
+
+```
+QUERY PLAN 1                                                                                                                                                                   
+
+Sort  (cost=222921.71..223910.16 rows=395377 width=137) (actual time=744.707..757.628 rows=5423.00 loops=1)                                                                    
+  Sort Key: (sum(a.repair_price)) DESC                                                                                                                                         
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                        
+  Buffers: shared hit=15933 read=7159, temp read=15307 written=15390                                                                                                           
+  ->  GroupAggregate  (cost=66551.06..129402.75 rows=395377 width=137) (actual time=495.909..754.567 rows=5423.00 loops=1)                                                     
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                                               
+        Buffers: shared hit=15933 read=7159, temp read=15307 written=15390                                                                                                    
+        ->  Gather Merge  (cost=66551.06..112599.23 rows=395377 width=101) (actual time=495.782..655.733 rows=395377.00 loops=1)                                               
+              Workers Planned: 2                                                                                                                                               
+              Workers Launched: 2                                                                                                                                              
+              Buffers: shared hit=15933 read=7159, temp read=15307 written=15390                                                                                               
+              ->  Sort  (cost=65551.04..65962.89 rows=164740 width=101) (actual time=490.587..538.343 rows=131792.33 loops=3)                                                  
+                    Sort Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                                    
+                    Sort Method: external merge  Disk: 14496kB                                                                                                                 
+                    Buffers: shared hit=15933 read=7159, temp read=15307 written=15390                                                                                         
+                    Worker 0:  Sort Method: external merge  Disk: 15064kB                                                                                                      
+                    Worker 1:  Sort Method: external merge  Disk: 14584kB                                                                                                      
+                    ->  Hash Join  (cost=9365.06..42263.95 rows=164740 width=101) (actual time=227.561..392.726 rows=131792.33 loops=3)                                        
+                          Hash Cond: (u.id = p.user_id)                                                                                                                        
+                          Buffers: shared hit=15903 read=7159, temp read=9789 written=9860                                                                                     
+                          ->  Hash Join  (cost=9115.86..41582.03 rows=164740 width=72) (actual time=225.185..353.903 rows=131792.33 loops=3)                                   
+                                Hash Cond: (r.user_id = u.id)                                                                                                                  
+                                Buffers: shared hit=15594 read=7159, temp read=9789 written=9860                                                                               
+                                ->  Parallel Hash Join  (cost=8850.65..40884.10 rows=164740 width=44) (actual time=223.115..316.040 rows=131792.33 loops=3)                    
+                                      Hash Cond: (r.id = a.rental_id)                                                                                                          
+                                      Buffers: shared hit=15237 read=7159, temp read=9789 written=9860                                                                         
+                                      ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.138..62.071 rows=361533.33 loops=3)       
+                                            Buffers: shared hit=11541 read=7159                                                                                                
+                                      ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=59.858..59.858 rows=131792.33 loops=3)                      
+                                            Buckets: 131072  Batches: 8  Memory Usage: 4928kB                                                                                  
+                                            Buffers: shared hit=3696, temp written=2920                                                                                        
+                                            ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.007..17.390 rows=131792.33 loops=3)
+                                                  Buffers: shared hit=3696                                                                                                     
+                                ->  Hash  (cost=183.98..183.98 rows=6498 width=28) (actual time=2.024..2.024 rows=6498.00 loops=3)                                             
+                                      Buckets: 8192  Batches: 1  Memory Usage: 445kB                                                                                           
+                                      Buffers: shared hit=357                                                                                                                  
+                                      ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.050..0.969 rows=6498.00 loops=3)                         
+                                            Buffers: shared hit=357                                                                                                            
+                          ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=2.330..2.331 rows=6498.00 loops=3)                                                   
+                                Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                 
+                                Buffers: shared hit=309                                                                                                                        
+                                ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.034..1.037 rows=6498.00 loops=3)                            
+                                      Buffers: shared hit=309                                                                                                                  
+Planning:                                                                                                                                                                      
+  Buffers: shared hit=40                                                                                                                                                       
+Planning Time: 0.398 ms                                                                                                                                                        
+Execution Time: 761.304 ms                                                                                                                                                     
+```
+
+```
+QUERY PLAN 2                                                                                                                                                                    
+
+Sort  (cost=222921.71..223910.16 rows=395377 width=137) (actual time=739.511..748.600 rows=5423.00 loops=1)                                                                    
+  Sort Key: (sum(a.repair_price)) DESC                                                                                                                                         
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                        
+  Buffers: shared hit=16076 read=7016, temp read=15305 written=15370                                                                                                           
+  ->  GroupAggregate  (cost=66551.06..129402.75 rows=395377 width=137) (actual time=488.417..745.545 rows=5423.00 loops=1)                                                     
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                                               
+        Buffers: shared hit=16076 read=7016, temp read=15305 written=15370                                                                                                     
+        ->  Gather Merge  (cost=66551.06..112599.23 rows=395377 width=101) (actual time=488.293..646.991 rows=395377.00 loops=1)                                               
+              Workers Planned: 2                                                                                                                                               
+              Workers Launched: 2                                                                                                                                              
+              Buffers: shared hit=16076 read=7016, temp read=15305 written=15370                                                                                               
+              ->  Sort  (cost=65551.04..65962.89 rows=164740 width=101) (actual time=482.773..530.570 rows=131792.33 loops=3)                                                  
+                    Sort Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                                    
+                    Sort Method: external merge  Disk: 15168kB                                                                                                                 
+                    Buffers: shared hit=16076 read=7016, temp read=15305 written=15370                                                                                         
+                    Worker 0:  Sort Method: external merge  Disk: 14344kB                                                                                                      
+                    Worker 1:  Sort Method: external merge  Disk: 14632kB                                                                                                      
+                    ->  Hash Join  (cost=9365.06..42263.95 rows=164740 width=101) (actual time=219.273..382.916 rows=131792.33 loops=3)                                        
+                          Hash Cond: (u.id = p.user_id)                                                                                                                        
+                          Buffers: shared hit=16046 read=7016, temp read=9787 written=9840                                                                                     
+                          ->  Hash Join  (cost=9115.86..41582.03 rows=164740 width=72) (actual time=217.036..344.784 rows=131792.33 loops=3)                                   
+                                Hash Cond: (r.user_id = u.id)                                                                                                                  
+                                Buffers: shared hit=15737 read=7016, temp read=9787 written=9840                                                                               
+                                ->  Parallel Hash Join  (cost=8850.65..40884.10 rows=164740 width=44) (actual time=214.887..307.524 rows=131792.33 loops=3)                    
+                                      Hash Cond: (r.id = a.rental_id)                                                                                                          
+                                      Buffers: shared hit=15380 read=7016, temp read=9787 written=9840                                                                         
+                                      ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.243..61.331 rows=361533.33 loops=3)       
+                                            Buffers: shared hit=11684 read=7016                                                                                                
+                                      ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=58.950..58.951 rows=131792.33 loops=3)                      
+                                            Buckets: 131072  Batches: 8  Memory Usage: 4928kB                                                                                  
+                                            Buffers: shared hit=3696, temp written=2908                                                                                        
+                                            ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.007..17.621 rows=131792.33 loops=3)
+                                                  Buffers: shared hit=3696                                                                                                     
+                                ->  Hash  (cost=183.98..183.98 rows=6498 width=28) (actual time=2.112..2.112 rows=6498.00 loops=3)                                             
+                                      Buckets: 8192  Batches: 1  Memory Usage: 445kB                                                                                           
+                                      Buffers: shared hit=357                                                                                                                  
+                                      ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.044..0.994 rows=6498.00 loops=3)                         
+                                            Buffers: shared hit=357                                                                                                            
+                          ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=2.191..2.191 rows=6498.00 loops=3)                                                   
+                                Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                 
+                                Buffers: shared hit=309                                                                                                                        
+                                ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.042..1.002 rows=6498.00 loops=3)                            
+                                      Buffers: shared hit=309                                                                                                                  
+Planning:                                                                                                                                                                      
+  Buffers: shared hit=40                                                                                                                                                       
+Planning Time: 0.461 ms                                                                                                                                                        
+Execution Time: 750.388 ms
+```                                                                                                                                                     
+
+```
+QUERY PLAN 3                                                                                                                                                                    
+
+Sort  (cost=222921.71..223910.16 rows=395377 width=137) (actual time=738.985..751.748 rows=5423.00 loops=1)                                                                    
+  Sort Key: (sum(a.repair_price)) DESC                                                                                                                                         
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                        
+  Buffers: shared hit=16345 read=6747, temp read=15306 written=15382                                                                                                           
+  ->  GroupAggregate  (cost=66551.06..129402.75 rows=395377 width=137) (actual time=485.539..748.728 rows=5423.00 loops=1)                                                     
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                                               
+        Buffers: shared hit=16345 read=6747, temp read=15306 written=15382                                                                                                     
+        ->  Gather Merge  (cost=66551.06..112599.23 rows=395377 width=101) (actual time=485.415..648.741 rows=395377.00 loops=1)                                               
+              Workers Planned: 2                                                                                                                                               
+              Workers Launched: 2                                                                                                                                              
+              Buffers: shared hit=16345 read=6747, temp read=15306 written=15382                                                                                               
+              ->  Sort  (cost=65551.04..65962.89 rows=164740 width=101) (actual time=479.842..527.892 rows=131792.33 loops=3)                                                  
+                    Sort Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                                    
+                    Sort Method: external merge  Disk: 15192kB                                                                                                                 
+                    Buffers: shared hit=16345 read=6747, temp read=15306 written=15382                                                                                         
+                    Worker 0:  Sort Method: external merge  Disk: 14600kB                                                                                                      
+                    Worker 1:  Sort Method: external merge  Disk: 14352kB                                                                                                      
+                    ->  Hash Join  (cost=9365.06..42263.95 rows=164740 width=101) (actual time=216.138..382.639 rows=131792.33 loops=3)                                        
+                          Hash Cond: (u.id = p.user_id)                                                                                                                        
+                          Buffers: shared hit=16315 read=6747, temp read=9788 written=9852                                                                                     
+                          ->  Hash Join  (cost=9115.86..41582.03 rows=164740 width=72) (actual time=213.786..344.665 rows=131792.33 loops=3)                                   
+                                Hash Cond: (r.user_id = u.id)                                                                                                                  
+                                Buffers: shared hit=16006 read=6747, temp read=9788 written=9852                                                                               
+                                ->  Parallel Hash Join  (cost=8850.65..40884.10 rows=164740 width=44) (actual time=211.720..307.425 rows=131792.33 loops=3)                    
+                                      Hash Cond: (r.id = a.rental_id)                                                                                                          
+                                      Buffers: shared hit=15649 read=6747, temp read=9788 written=9852                                                                         
+                                      ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.094..60.994 rows=361533.33 loops=3)       
+                                            Buffers: shared hit=11953 read=6747                                                                                                
+                                      ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=55.115..55.116 rows=131792.33 loops=3)                      
+                                            Buckets: 131072  Batches: 8  Memory Usage: 4928kB                                                                                  
+                                            Buffers: shared hit=3696, temp written=2916                                                                                        
+                                            ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.007..16.501 rows=131792.33 loops=3)
+                                                  Buffers: shared hit=3696                                                                                                     
+                                ->  Hash  (cost=183.98..183.98 rows=6498 width=28) (actual time=2.030..2.030 rows=6498.00 loops=3)                                             
+                                      Buckets: 8192  Batches: 1  Memory Usage: 445kB                                                                                           
+                                      Buffers: shared hit=357                                                                                                                  
+                                      ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.053..0.966 rows=6498.00 loops=3)                         
+                                            Buffers: shared hit=357                                                                                                            
+                          ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=2.312..2.313 rows=6498.00 loops=3)                                                   
+                                Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                 
+                                Buffers: shared hit=309                                                                                                                        
+                                ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.038..1.041 rows=6498.00 loops=3)                            
+                                      Buffers: shared hit=309                                                                                                                  
+Planning:                                                                                                                                                                      
+  Buffers: shared hit=40                                                                                                                                                       
+Planning Time: 0.457 ms                                                                                                                                                        
+Execution Time: 755.134 ms                                                                                                                                                     
+```
+
+На объеме около 1 000 000 аренд запрос выполняется примерно 755 мс.
+
+План показывает, что основная стоимость находится в обработке почти всего объема данных:
+полное сканирование Rental и Accident, соединения через Hash Join,
+затем сортировка по ключу группировки и агрегация.
+
+Главная проблема — промежуточная сортировка перед GroupAggregate выполняется
+с использованием временных файлов:
+```                                                                                         
+  Sort Method: external merge
+  Disk: ~15 MB на процесс
+  temp read/written: ~120 MB
+```
+
+Также планировщик переоценивает количество групп:
+  ожидается 395 377 групп,
+  фактически получается 5 423 группы.
+
+Индексы в этом запросе не используются, но для полного агрегирующего отчета
+это ожидаемо, так как фильтрация по конкретным пользователям, датам или статусам отсутствует.
+
+Рекомендуется проверить запрос при увеличенном work_mem
+и рассмотреть вариант предварительной агрегации по user_id.
+
+Для увелечения work_mem на момент запроса пишем SET work_mem = '64MB'; и RESET work_mem; в начале и в конце запроса соответственно.
+
+
+
+
+
+QUERY PLAN                                                                                                                                                |
+----------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=101136.05..102124.49 rows=395377 width=137) (actual time=1015.315..1015.706 rows=5423.00 loops=1)                                             |
+  Sort Key: (sum(a.repair_price)) DESC                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                   |
+  Buffers: shared hit=15889 read=6729                                                                                                                     |
+  ->  HashAggregate  (cost=59437.88..64380.09 rows=395377 width=137) (actual time=1010.454..1012.557 rows=5423.00 loops=1)                                |
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                          |
+        Batches: 1  Memory Usage: 5649kB                                                                                                                  |
+        Buffers: shared hit=15889 read=6729                                                                                                               |
+        ->  Hash Join  (cost=13106.39..47576.57 rows=395377 width=101) (actual time=152.364..814.770 rows=395377.00 loops=1)                              |
+              Hash Cond: (u.id = p.user_id)                                                                                                               |
+              Buffers: shared hit=15889 read=6729                                                                                                         |
+              ->  Hash Join  (cost=12857.19..46288.82 rows=395377 width=72) (actual time=150.553..708.220 rows=395377.00 loops=1)                         |
+                    Hash Cond: (r.user_id = u.id)                                                                                                         |
+                    Buffers: shared hit=15786 read=6729                                                                                                   |
+                    ->  Hash Join  (cost=12591.98..44985.07 rows=395377 width=44) (actual time=148.866..602.561 rows=395377.00 loops=1)                   |
+                          Hash Cond: (r.id = a.rental_id)                                                                                                 |
+                          Buffers: shared hit=15667 read=6729                                                                                             |
+                          ->  Seq Scan on "Rental" r  (cost=0.00..29546.00 rows=1084600 width=32) (actual time=0.119..103.339 rows=1084600.00 loops=1)    |
+                                Buffers: shared hit=12098 read=6602                                                                                       |
+                          ->  Hash  (cost=7649.77..7649.77 rows=395377 width=44) (actual time=146.724..146.725 rows=395377.00 loops=1)                    |
+                                Buckets: 524288  Batches: 1  Memory Usage: 34985kB                                                                        |
+                                Buffers: shared hit=3569 read=127                                                                                         |
+                                ->  Seq Scan on "Accident" a  (cost=0.00..7649.77 rows=395377 width=44) (actual time=0.125..43.148 rows=395377.00 loops=1)|
+                                      Buffers: shared hit=3569 read=127                                                                                   |
+                    ->  Hash  (cost=183.98..183.98 rows=6498 width=28) (actual time=1.677..1.677 rows=6498.00 loops=1)                                    |
+                          Buckets: 8192  Batches: 1  Memory Usage: 445kB                                                                                  |
+                          Buffers: shared hit=119                                                                                                         |
+                          ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.006..0.700 rows=6498.00 loops=1)                |
+                                Buffers: shared hit=119                                                                                                   |
+              ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.803..1.803 rows=6498.00 loops=1)                                          |
+                    Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                        |
+                    Buffers: shared hit=103                                                                                                               |
+                    ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.016..0.729 rows=6498.00 loops=1)                   |
+                          Buffers: shared hit=103                                                                                                         |
+Settings: work_mem = '64MB'  
+Planning:                                                                                                                                                 |
+  Buffers: shared hit=32 read=8                                                                                                                           |
+Planning Time: 0.561 ms                                                                                                                                   |
+Execution Time: 1023.131 ms                                                                                                                               |
+
+QUERY PLAN                                                                                                                                                |
+----------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=101136.05..102124.49 rows=395377 width=137) (actual time=1012.211..1012.611 rows=5423.00 loops=1)                                             |
+  Sort Key: (sum(a.repair_price)) DESC                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                   |
+  Buffers: shared hit=16025 read=6593                                                                                                                     |
+  ->  HashAggregate  (cost=59437.88..64380.09 rows=395377 width=137) (actual time=1007.662..1009.696 rows=5423.00 loops=1)                                |
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                          |
+        Batches: 1  Memory Usage: 5649kB                                                                                                                  |
+        Buffers: shared hit=16025 read=6593                                                                                                               |
+        ->  Hash Join  (cost=13106.39..47576.57 rows=395377 width=101) (actual time=150.895..812.730 rows=395377.00 loops=1)                              |
+              Hash Cond: (u.id = p.user_id)                                                                                                               |
+              Buffers: shared hit=16025 read=6593                                                                                                         |
+              ->  Hash Join  (cost=12857.19..46288.82 rows=395377 width=72) (actual time=149.042..708.058 rows=395377.00 loops=1)                         |
+                    Hash Cond: (r.user_id = u.id)                                                                                                         |
+                    Buffers: shared hit=15922 read=6593                                                                                                   |
+                    ->  Hash Join  (cost=12591.98..44985.07 rows=395377 width=44) (actual time=147.346..600.148 rows=395377.00 loops=1)                   |
+                          Hash Cond: (r.id = a.rental_id)                                                                                                 |
+                          Buffers: shared hit=15803 read=6593                                                                                             |
+                          ->  Seq Scan on "Rental" r  (cost=0.00..29546.00 rows=1084600 width=32) (actual time=0.200..103.151 rows=1084600.00 loops=1)    |
+                                Buffers: shared hit=12107 read=6593                                                                                       |
+                          ->  Hash  (cost=7649.77..7649.77 rows=395377 width=44) (actual time=145.419..145.420 rows=395377.00 loops=1)                    |
+                                Buckets: 524288  Batches: 1  Memory Usage: 34985kB                                                                        |
+                                Buffers: shared hit=3696                                                                                                  |
+                                ->  Seq Scan on "Accident" a  (cost=0.00..7649.77 rows=395377 width=44) (actual time=0.013..42.023 rows=395377.00 loops=1)|
+                                      Buffers: shared hit=3696                                                                                            |
+                    ->  Hash  (cost=183.98..183.98 rows=6498 width=28) (actual time=1.664..1.665 rows=6498.00 loops=1)                                    |
+                          Buckets: 8192  Batches: 1  Memory Usage: 445kB                                                                                  |
+                          Buffers: shared hit=119                                                                                                         |
+                          ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.006..0.659 rows=6498.00 loops=1)                |
+                                Buffers: shared hit=119                                                                                                   |
+              ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.791..1.791 rows=6498.00 loops=1)                                          |
+                    Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                        |
+                    Buffers: shared hit=103                                                                                                               |
+                    ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.010..0.746 rows=6498.00 loops=1)                   |
+                          Buffers: shared hit=103                                                                                                         |
+Settings: work_mem = '64MB'                                                                                                                               |
+Planning:                                                                                                                                                 |
+  Buffers: shared hit=40                                                                                                                                  |
+Planning Time: 0.396 ms                                                                                                                                   |
+Execution Time: 1018.301 ms                                                                                                                               |
+
+QUERY PLAN                                                                                                                                                |
+----------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=101136.05..102124.49 rows=395377 width=137) (actual time=1017.067..1017.502 rows=5423.00 loops=1)                                             |
+  Sort Key: (sum(a.repair_price)) DESC                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                   |
+  Buffers: shared hit=16079 read=6539                                                                                                                     |
+  ->  HashAggregate  (cost=59437.88..64380.09 rows=395377 width=137) (actual time=1012.384..1014.588 rows=5423.00 loops=1)                                |
+        Group Key: u.id, p.first_name, p.last_name, p.patronymic                                                                                          |
+        Batches: 1  Memory Usage: 5649kB                                                                                                                  |
+        Buffers: shared hit=16079 read=6539                                                                                                               |
+        ->  Hash Join  (cost=13106.39..47576.57 rows=395377 width=101) (actual time=152.688..815.010 rows=395377.00 loops=1)                              |
+              Hash Cond: (u.id = p.user_id)                                                                                                               |
+              Buffers: shared hit=16079 read=6539                                                                                                         |
+              ->  Hash Join  (cost=12857.19..46288.82 rows=395377 width=72) (actual time=150.961..709.297 rows=395377.00 loops=1)                         |
+                    Hash Cond: (r.user_id = u.id)                                                                                                         |
+                    Buffers: shared hit=15976 read=6539                                                                                                   |
+                    ->  Hash Join  (cost=12591.98..44985.07 rows=395377 width=44) (actual time=149.289..602.973 rows=395377.00 loops=1)                   |
+                          Hash Cond: (r.id = a.rental_id)                                                                                                 |
+                          Buffers: shared hit=15857 read=6539                                                                                             |
+                          ->  Seq Scan on "Rental" r  (cost=0.00..29546.00 rows=1084600 width=32) (actual time=0.218..102.244 rows=1084600.00 loops=1)    |
+                                Buffers: shared hit=12161 read=6539                                                                                       |
+                          ->  Hash  (cost=7649.77..7649.77 rows=395377 width=44) (actual time=147.368..147.369 rows=395377.00 loops=1)                    |
+                                Buckets: 524288  Batches: 1  Memory Usage: 34985kB                                                                        |
+                                Buffers: shared hit=3696                                                                                                  |
+                                ->  Seq Scan on "Accident" a  (cost=0.00..7649.77 rows=395377 width=44) (actual time=0.013..42.785 rows=395377.00 loops=1)|
+                                      Buffers: shared hit=3696                                                                                            |
+                    ->  Hash  (cost=183.98..183.98 rows=6498 width=28) (actual time=1.642..1.643 rows=6498.00 loops=1)                                    |
+                          Buckets: 8192  Batches: 1  Memory Usage: 445kB                                                                                  |
+                          Buffers: shared hit=119                                                                                                         |
+                          ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.006..0.639 rows=6498.00 loops=1)                |
+                                Buffers: shared hit=119                                                                                                   |
+              ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.720..1.720 rows=6498.00 loops=1)                                          |
+                    Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                        |
+                    Buffers: shared hit=103                                                                                                               |
+                    ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.018..0.710 rows=6498.00 loops=1)                   |
+                          Buffers: shared hit=103                                                                                                         |
+Settings: work_mem = '64MB'                                                                                                                               |
+Planning:                                                                                                                                                 |
+  Buffers: shared hit=40                                                                                                                                  |
+  Planning Time: 0.395 ms                                                                                                                                 |
+Execution Time: 1024.896 ms                                                                                                                               |
+
+Проверка показала, что увеличение work_mem до 64MB устраняет использование временных файлов,
+но не приводит к ускорению запроса.
+
+При стандартном значении work_mem запрос выполняется примерно за 755 мс
+с использованием параллельного плана и временных файлов.
+
+При work_mem = 64MB запрос перестает использовать временные файлы,
+переходит на HashAggregate в памяти,
+но теряет параллельность и выполняется примерно за 1023 мс.
+
+Таким образом, простая рекомендация "увеличить work_mem" не подтверждается.
+Необходимо дополнительно проверить вариант запроса с предварительной агрегацией по user_id:
+
+```sql
+select
+    u.id,
+    p.first_name,
+    p.last_name,
+    p.patronymic,
+    u.phone_number,
+    agg.accidents_count,
+    agg.minor_count,
+    agg.moderate_count,
+    agg.severe_count,
+    agg.total_repair_price
+from (
+    select
+        r.user_id,
+        count(a.id) as accidents_count,
+        count(a.id) filter (where a.severity = 'minor') as minor_count,
+        count(a.id) filter (where a.severity = 'moderate') as moderate_count,
+        count(a.id) filter (where a.severity = 'severe') as severe_count,
+        sum(a.repair_price) as total_repair_price
+    from "Accident" a
+    join "Rental" r on a.rental_id = r.id
+    where r.user_id is not null
+    group by r.user_id
+) agg
+join "User" u on u.id = agg.user_id
+join "Profile" p on p.user_id = u.id
+order by agg.total_repair_price desc;
+```
+С применением стандартного work_mem и с work_mem = 64MB.
+
+#### Предварительная агрегация
+
+QUERY PLAN                                                                                                                                                                                 |
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=48178.47..48192.02 rows=5423 width=137) (actual time=383.299..391.971 rows=5423.00 loops=1)                                                                                    |
+  Sort Key: agg.total_repair_price DESC                                                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                                    |
+  Buffers: shared hit=15902 read=6716, temp read=9790 written=9860                                                                                                                         |
+  ->  Hash Join  (cost=47626.81..47842.11 rows=5423 width=137) (actual time=376.896..389.069 rows=5423.00 loops=1)                                                                         |
+        Hash Cond: (u.id = p.user_id)                                                                                                                                                      |
+        Buffers: shared hit=15902 read=6716, temp read=9790 written=9860                                                                                                                   |
+        ->  Hash Join  (cost=47377.61..47578.66 rows=5423 width=108) (actual time=374.948..385.646 rows=5423.00 loops=1)                                                                   |
+              Hash Cond: (u.id = agg.user_id)                                                                                                                                              |
+              Buffers: shared hit=15799 read=6716, temp read=9790 written=9860                                                                                                             |
+              ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.006..0.609 rows=6498.00 loops=1)                                                             |
+                    Buffers: shared hit=119                                                                                                                                                |
+              ->  Hash  (cost=47309.82..47309.82 rows=5423 width=80) (actual time=374.876..383.159 rows=5423.00 loops=1)                                                                   |
+                    Buckets: 8192  Batches: 1  Memory Usage: 525kB                                                                                                                         |
+                    Buffers: shared hit=15680 read=6716, temp read=9790 written=9860                                                                                                       |
+                    ->  Subquery Scan on agg  (cost=47187.80..47309.82 rows=5423 width=80) (actual time=370.412..381.693 rows=5423.00 loops=1)                                             |
+                          Buffers: shared hit=15680 read=6716, temp read=9790 written=9860                                                                                                 |
+                          ->  Finalize HashAggregate  (cost=47187.80..47255.59 rows=5423 width=80) (actual time=370.410..380.990 rows=5423.00 loops=1)                                     |
+                                Group Key: r.user_id                                                                                                                                       |
+                                Batches: 1  Memory Usage: 1425kB                                                                                                                           |
+                                Buffers: shared hit=15680 read=6716, temp read=9790 written=9860                                                                                           |
+                                ->  Gather  (cost=45590.75..46960.04 rows=13015 width=80) (actual time=359.685..371.488 rows=16232.00 loops=1)                                             |
+                                      Workers Planned: 2                                                                                                                                   |
+                                      Workers Launched: 2                                                                                                                                  |
+                                      Buffers: shared hit=15680 read=6716, temp read=9790 written=9860                                                                                     |
+                                      ->  Partial HashAggregate  (cost=44590.75..44658.54 rows=5423 width=80) (actual time=356.200..357.972 rows=5410.67 loops=3)                          |
+                                            Group Key: r.user_id                                                                                                                           |
+                                            Batches: 1  Memory Usage: 1425kB                                                                                                               |
+                                            Buffers: shared hit=15680 read=6716, temp read=9790 written=9860                                                                               |
+                                            Worker 0:  Batches: 1  Memory Usage: 1425kB                                                                                                    |
+                                            Worker 1:  Batches: 1  Memory Usage: 1425kB                                                                                                    |
+                                            ->  Parallel Hash Join  (cost=8850.65..40884.10 rows=164740 width=44) (actual time=214.351..312.385 rows=131792.33 loops=3)                    |
+                                                  Hash Cond: (r.id = a.rental_id)                                                                                                          |
+                                                  Buffers: shared hit=15680 read=6716, temp read=9790 written=9860                                                                         |
+                                                  ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.550..57.581 rows=361533.33 loops=3)       |
+                                                        Buffers: shared hit=11984 read=6716                                                                                                |
+                                                  ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=61.145..61.146 rows=131792.33 loops=3)                      |
+                                                        Buckets: 131072  Batches: 8  Memory Usage: 4928kB                                                                                  |
+                                                        Buffers: shared hit=3696, temp written=2924                                                                                        |
+                                                        ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.012..18.016 rows=131792.33 loops=3)|
+                                                              Buffers: shared hit=3696                                                                                                     |
+        ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.912..1.913 rows=6498.00 loops=1)                                                                                 |
+              Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                                               |
+              Buffers: shared hit=103                                                                                                                                                      |
+              ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.008..0.734 rows=6498.00 loops=1)                                                          |
+                    Buffers: shared hit=103                                                                                                                                                |
+Planning:                                                                                                                                                                                  |
+  Buffers: shared hit=28                                                                                                                                                                   |
+Planning Time: 0.326 ms                                                                                                                                                                    |
+Execution Time: 392.657 ms                                                                                                                                                                 |
+
+QUERY PLAN                                                                                                                                                                                 |
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=48178.47..48192.02 rows=5423 width=137) (actual time=373.516..381.528 rows=5423.00 loops=1)                                                                                    |
+  Sort Key: agg.total_repair_price DESC                                                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                                    |
+  Buffers: shared hit=15902 read=6716, temp read=9789 written=9852                                                                                                                         |
+  ->  Hash Join  (cost=47626.81..47842.11 rows=5423 width=137) (actual time=367.400..378.688 rows=5423.00 loops=1)                                                                         |
+        Hash Cond: (u.id = p.user_id)                                                                                                                                                      |
+        Buffers: shared hit=15902 read=6716, temp read=9789 written=9852                                                                                                                   |
+        ->  Hash Join  (cost=47377.61..47578.66 rows=5423 width=108) (actual time=365.529..375.379 rows=5423.00 loops=1)                                                                   |
+              Hash Cond: (u.id = agg.user_id)                                                                                                                                              |
+              Buffers: shared hit=15799 read=6716, temp read=9789 written=9852                                                                                                             |
+              ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.004..0.595 rows=6498.00 loops=1)                                                             |
+                    Buffers: shared hit=119                                                                                                                                                |
+              ->  Hash  (cost=47309.82..47309.82 rows=5423 width=80) (actual time=365.494..373.144 rows=5423.00 loops=1)                                                                   |
+                    Buckets: 8192  Batches: 1  Memory Usage: 525kB                                                                                                                         |
+                    Buffers: shared hit=15680 read=6716, temp read=9789 written=9852                                                                                                       |
+                    ->  Subquery Scan on agg  (cost=47187.80..47309.82 rows=5423 width=80) (actual time=362.530..372.062 rows=5423.00 loops=1)                                             |
+                          Buffers: shared hit=15680 read=6716, temp read=9789 written=9852                                                                                                 |
+                          ->  Finalize HashAggregate  (cost=47187.80..47255.59 rows=5423 width=80) (actual time=362.528..371.405 rows=5423.00 loops=1)                                     |
+                                Group Key: r.user_id                                                                                                                                       |
+                                Batches: 1  Memory Usage: 1425kB                                                                                                                           |
+                                Buffers: shared hit=15680 read=6716, temp read=9789 written=9852                                                                                           |
+                                ->  Gather  (cost=45590.75..46960.04 rows=13015 width=80) (actual time=352.532..363.445 rows=16244.00 loops=1)                                             |
+                                      Workers Planned: 2                                                                                                                                   |
+                                      Workers Launched: 2                                                                                                                                  |
+                                      Buffers: shared hit=15680 read=6716, temp read=9789 written=9852                                                                                     |
+                                      ->  Partial HashAggregate  (cost=44590.75..44658.54 rows=5423 width=80) (actual time=349.056..350.672 rows=5414.67 loops=3)                          |
+                                            Group Key: r.user_id                                                                                                                           |
+                                            Batches: 1  Memory Usage: 1425kB                                                                                                               |
+                                            Buffers: shared hit=15680 read=6716, temp read=9789 written=9852                                                                               |
+                                            Worker 0:  Batches: 1  Memory Usage: 1425kB                                                                                                    |
+                                            Worker 1:  Batches: 1  Memory Usage: 1425kB                                                                                                    |
+                                            ->  Parallel Hash Join  (cost=8850.65..40884.10 rows=164740 width=44) (actual time=213.422..306.939 rows=131792.33 loops=3)                    |
+                                                  Hash Cond: (r.id = a.rental_id)                                                                                                          |
+                                                  Buffers: shared hit=15680 read=6716, temp read=9789 written=9852                                                                         |
+                                                  ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.617..59.821 rows=361533.33 loops=3)       |
+                                                        Buffers: shared hit=11984 read=6716                                                                                                |
+                                                  ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=56.345..56.346 rows=131792.33 loops=3)                      |
+                                                        Buckets: 131072  Batches: 8  Memory Usage: 4928kB                                                                                  |
+                                                        Buffers: shared hit=3696, temp written=2916                                                                                        |
+                                                        ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.009..16.944 rows=131792.33 loops=3)|
+                                                              Buffers: shared hit=3696                                                                                                     |
+        ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.838..1.839 rows=6498.00 loops=1)                                                                                 |
+              Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                                               |
+              Buffers: shared hit=103                                                                                                                                                      |
+              ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.007..0.697 rows=6498.00 loops=1)                                                          |
+                    Buffers: shared hit=103                                                                                                                                                |
+Planning:                                                                                                                                                                                  |
+  Buffers: shared hit=28                                                                                                                                                                   |
+Planning Time: 0.302 ms                                                                                                                                                                    |
+Execution Time: 382.189 ms                                                                                                                                                                 |
+
+QUERY PLAN                                                                                                                                                                                 |
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=48178.47..48192.02 rows=5423 width=137) (actual time=366.258..374.413 rows=5423.00 loops=1)                                                                                    |
+  Sort Key: agg.total_repair_price DESC                                                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                                    |
+  Buffers: shared hit=15902 read=6716, temp read=9787 written=9856                                                                                                                         |
+  ->  Hash Join  (cost=47626.81..47842.11 rows=5423 width=137) (actual time=360.269..371.575 rows=5423.00 loops=1)                                                                         |
+        Hash Cond: (u.id = p.user_id)                                                                                                                                                      |
+        Buffers: shared hit=15902 read=6716, temp read=9787 written=9856                                                                                                                   |
+        ->  Hash Join  (cost=47377.61..47578.66 rows=5423 width=108) (actual time=358.381..368.285 rows=5423.00 loops=1)                                                                   |
+              Hash Cond: (u.id = agg.user_id)                                                                                                                                              |
+              Buffers: shared hit=15799 read=6716, temp read=9787 written=9856                                                                                                             |
+              ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.005..0.561 rows=6498.00 loops=1)                                                             |
+                    Buffers: shared hit=119                                                                                                                                                |
+              ->  Hash  (cost=47309.82..47309.82 rows=5423 width=80) (actual time=358.346..366.083 rows=5423.00 loops=1)                                                                   |
+                    Buckets: 8192  Batches: 1  Memory Usage: 525kB                                                                                                                         |
+                    Buffers: shared hit=15680 read=6716, temp read=9787 written=9856                                                                                                       |
+                    ->  Subquery Scan on agg  (cost=47187.80..47309.82 rows=5423 width=80) (actual time=355.560..365.049 rows=5423.00 loops=1)                                             |
+                          Buffers: shared hit=15680 read=6716, temp read=9787 written=9856                                                                                                 |
+                          ->  Finalize HashAggregate  (cost=47187.80..47255.59 rows=5423 width=80) (actual time=355.559..364.434 rows=5423.00 loops=1)                                     |
+                                Group Key: r.user_id                                                                                                                                       |
+                                Batches: 1  Memory Usage: 1425kB                                                                                                                           |
+                                Buffers: shared hit=15680 read=6716, temp read=9787 written=9856                                                                                           |
+                                ->  Gather  (cost=45590.75..46960.04 rows=13015 width=80) (actual time=344.970..356.379 rows=16240.00 loops=1)                                             |
+                                      Workers Planned: 2                                                                                                                                   |
+                                      Workers Launched: 2                                                                                                                                  |
+                                      Buffers: shared hit=15680 read=6716, temp read=9787 written=9856                                                                                     |
+                                      ->  Partial HashAggregate  (cost=44590.75..44658.54 rows=5423 width=80) (actual time=341.211..342.777 rows=5413.33 loops=3)                          |
+                                            Group Key: r.user_id                                                                                                                           |
+                                            Batches: 1  Memory Usage: 1425kB                                                                                                               |
+                                            Buffers: shared hit=15680 read=6716, temp read=9787 written=9856                                                                               |
+                                            Worker 0:  Batches: 1  Memory Usage: 1425kB                                                                                                    |
+                                            Worker 1:  Batches: 1  Memory Usage: 1425kB                                                                                                    |
+                                            ->  Parallel Hash Join  (cost=8850.65..40884.10 rows=164740 width=44) (actual time=207.804..300.567 rows=131792.33 loops=3)                    |
+                                                  Hash Cond: (r.id = a.rental_id)                                                                                                          |
+                                                  Buffers: shared hit=15680 read=6716, temp read=9787 written=9856                                                                         |
+                                                  ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.533..57.718 rows=361533.33 loops=3)       |
+                                                        Buffers: shared hit=11984 read=6716                                                                                                |
+                                                  ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=55.064..55.065 rows=131792.33 loops=3)                      |
+                                                        Buckets: 131072  Batches: 8  Memory Usage: 4928kB                                                                                  |
+                                                        Buffers: shared hit=3696, temp written=2920                                                                                        |
+                                                        ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.010..16.699 rows=131792.33 loops=3)|
+                                                              Buffers: shared hit=3696                                                                                                     |
+        ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.848..1.849 rows=6498.00 loops=1)                                                                                 |
+              Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                                               |
+              Buffers: shared hit=103                                                                                                                                                      |
+              ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.008..0.701 rows=6498.00 loops=1)                                                          |
+                    Buffers: shared hit=103                                                                                                                                                |
+Planning:                                                                                                                                                                                  |
+  Buffers: shared hit=28                                                                                                                                                                   |
+Planning Time: 0.303 ms                                                                                                                                                                    |
+Execution Time: 375.187 ms                                                                                                                                                                 |
+
+#### Предварительная агрегация и work_mem = 64MB
+
+QUERY PLAN                                                                                                                                                                                 |
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=39102.47..39116.02 rows=5423 width=137) (actual time=319.485..321.779 rows=5423.00 loops=1)                                                                                    |
+  Sort Key: agg.total_repair_price DESC                                                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                                    |
+  Buffers: shared hit=15902 read=6716                                                                                                                                                      |
+  ->  Hash Join  (cost=38550.81..38766.11 rows=5423 width=137) (actual time=313.273..318.888 rows=5423.00 loops=1)                                                                         |
+        Hash Cond: (u.id = p.user_id)                                                                                                                                                      |
+        Buffers: shared hit=15902 read=6716                                                                                                                                                |
+        ->  Hash Join  (cost=38301.61..38502.66 rows=5423 width=108) (actual time=311.397..315.547 rows=5423.00 loops=1)                                                                   |
+              Hash Cond: (u.id = agg.user_id)                                                                                                                                              |
+              Buffers: shared hit=15799 read=6716                                                                                                                                          |
+              ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.006..0.601 rows=6498.00 loops=1)                                                             |
+                    Buffers: shared hit=119                                                                                                                                                |
+              ->  Hash  (cost=38233.82..38233.82 rows=5423 width=80) (actual time=311.359..313.264 rows=5423.00 loops=1)                                                                   |
+                    Buckets: 8192  Batches: 1  Memory Usage: 525kB                                                                                                                         |
+                    Buffers: shared hit=15680 read=6716                                                                                                                                    |
+                    ->  Subquery Scan on agg  (cost=38111.80..38233.82 rows=5423 width=80) (actual time=308.217..312.022 rows=5423.00 loops=1)                                             |
+                          Buffers: shared hit=15680 read=6716                                                                                                                              |
+                          ->  Finalize HashAggregate  (cost=38111.80..38179.59 rows=5423 width=80) (actual time=308.216..311.363 rows=5423.00 loops=1)                                     |
+                                Group Key: r.user_id                                                                                                                                       |
+                                Batches: 1  Memory Usage: 1681kB                                                                                                                           |
+                                Buffers: shared hit=15680 read=6716                                                                                                                        |
+                                ->  Gather  (cost=36514.75..37884.04 rows=13015 width=80) (actual time=296.557..303.018 rows=16242.00 loops=1)                                             |
+                                      Workers Planned: 2                                                                                                                                   |
+                                      Workers Launched: 2                                                                                                                                  |
+                                      Buffers: shared hit=15680 read=6716                                                                                                                  |
+                                      ->  Partial HashAggregate  (cost=35514.75..35582.54 rows=5423 width=80) (actual time=292.997..294.618 rows=5414.00 loops=3)                          |
+                                            Group Key: r.user_id                                                                                                                           |
+                                            Batches: 1  Memory Usage: 1681kB                                                                                                               |
+                                            Buffers: shared hit=15680 read=6716                                                                                                            |
+                                            Worker 0:  Batches: 1  Memory Usage: 1681kB                                                                                                    |
+                                            Worker 1:  Batches: 1  Memory Usage: 1681kB                                                                                                    |
+                                            ->  Parallel Hash Join  (cost=7402.65..31808.10 rows=164740 width=44) (actual time=59.507..241.156 rows=131792.33 loops=3)                     |
+                                                  Hash Cond: (r.id = a.rental_id)                                                                                                          |
+                                                  Buffers: shared hit=15680 read=6716                                                                                                      |
+                                                  ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.571..39.413 rows=361533.33 loops=3)       |
+                                                        Buffers: shared hit=11984 read=6716                                                                                                |
+                                                  ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=58.246..58.247 rows=131792.33 loops=3)                      |
+                                                        Buckets: 524288  Batches: 1  Memory Usage: 35072kB                                                                                 |
+                                                        Buffers: shared hit=3696                                                                                                           |
+                                                        ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.010..17.632 rows=131792.33 loops=3)|
+                                                              Buffers: shared hit=3696                                                                                                     |
+        ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.845..1.846 rows=6498.00 loops=1)                                                                                 |
+              Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                                               |
+              Buffers: shared hit=103                                                                                                                                                      |
+              ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.008..0.705 rows=6498.00 loops=1)                                                          |
+                    Buffers: shared hit=103                                                                                                                                                |
+Settings: work_mem = '64MB'                                                                                                                                                                |
+Planning:                                                                                                                                                                                  |
+  Buffers: shared hit=28                                                                                                                                                                   |
+Planning Time: 0.305 ms                                                                                                                                                                    |
+Execution Time: 322.442 ms                                                                                                                                                                 |
+
+QUERY PLAN                                                                                                                                                                                 |
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=39102.47..39116.02 rows=5423 width=137) (actual time=321.588..324.305 rows=5423.00 loops=1)                                                                                    |
+  Sort Key: agg.total_repair_price DESC                                                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                                    |
+  Buffers: shared hit=15902 read=6716                                                                                                                                                      |
+  ->  Hash Join  (cost=38550.81..38766.11 rows=5423 width=137) (actual time=315.449..321.213 rows=5423.00 loops=1)                                                                         |
+        Hash Cond: (u.id = p.user_id)                                                                                                                                                      |
+        Buffers: shared hit=15902 read=6716                                                                                                                                                |
+        ->  Hash Join  (cost=38301.61..38502.66 rows=5423 width=108) (actual time=313.578..317.867 rows=5423.00 loops=1)                                                                   |
+              Hash Cond: (u.id = agg.user_id)                                                                                                                                              |
+              Buffers: shared hit=15799 read=6716                                                                                                                                          |
+              ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.005..0.563 rows=6498.00 loops=1)                                                             |
+                    Buffers: shared hit=119                                                                                                                                                |
+              ->  Hash  (cost=38233.82..38233.82 rows=5423 width=80) (actual time=313.542..315.641 rows=5423.00 loops=1)                                                                   |
+                    Buckets: 8192  Batches: 1  Memory Usage: 525kB                                                                                                                         |
+                    Buffers: shared hit=15680 read=6716                                                                                                                                    |
+                    ->  Subquery Scan on agg  (cost=38111.80..38233.82 rows=5423 width=80) (actual time=310.423..314.426 rows=5423.00 loops=1)                                             |
+                          Buffers: shared hit=15680 read=6716                                                                                                                              |
+                          ->  Finalize HashAggregate  (cost=38111.80..38179.59 rows=5423 width=80) (actual time=310.422..313.769 rows=5423.00 loops=1)                                     |
+                                Group Key: r.user_id                                                                                                                                       |
+                                Batches: 1  Memory Usage: 1681kB                                                                                                                           |
+                                Buffers: shared hit=15680 read=6716                                                                                                                        |
+                                ->  Gather  (cost=36514.75..37884.04 rows=13015 width=80) (actual time=297.460..304.076 rows=16237.00 loops=1)                                             |
+                                      Workers Planned: 2                                                                                                                                   |
+                                      Workers Launched: 2                                                                                                                                  |
+                                      Buffers: shared hit=15680 read=6716                                                                                                                  |
+                                      ->  Partial HashAggregate  (cost=35514.75..35582.54 rows=5423 width=80) (actual time=293.913..296.379 rows=5412.33 loops=3)                          |
+                                            Group Key: r.user_id                                                                                                                           |
+                                            Batches: 1  Memory Usage: 1681kB                                                                                                               |
+                                            Buffers: shared hit=15680 read=6716                                                                                                            |
+                                            Worker 0:  Batches: 1  Memory Usage: 1681kB                                                                                                    |
+                                            Worker 1:  Batches: 1  Memory Usage: 1681kB                                                                                                    |
+                                            ->  Parallel Hash Join  (cost=7402.65..31808.10 rows=164740 width=44) (actual time=59.902..241.689 rows=131792.33 loops=3)                     |
+                                                  Hash Cond: (r.id = a.rental_id)                                                                                                          |
+                                                  Buffers: shared hit=15680 read=6716                                                                                                      |
+                                                  ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.574..39.464 rows=361533.33 loops=3)       |
+                                                        Buffers: shared hit=11984 read=6716                                                                                                |
+                                                  ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=58.620..58.621 rows=131792.33 loops=3)                      |
+                                                        Buckets: 524288  Batches: 1  Memory Usage: 35072kB                                                                                 |
+                                                        Buffers: shared hit=3696                                                                                                           |
+                                                        ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.009..17.945 rows=131792.33 loops=3)|
+                                                              Buffers: shared hit=3696                                                                                                     |
+        ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.837..1.837 rows=6498.00 loops=1)                                                                                 |
+              Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                                               |
+              Buffers: shared hit=103                                                                                                                                                      |
+              ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.007..0.699 rows=6498.00 loops=1)                                                          |
+                    Buffers: shared hit=103                                                                                                                                                |
+Settings: work_mem = '64MB'                                                                                                                                                                |
+Planning:                                                                                                                                                                                  |
+  Buffers: shared hit=28                                                                                                                                                                   |
+Planning Time: 0.306 ms                                                                                                                                                                    |
+Execution Time: 325.035 ms                                                                                                                                                                 |
+
+QUERY PLAN                                                                                                                                                                                 |
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Sort  (cost=39102.47..39116.02 rows=5423 width=137) (actual time=311.063..313.368 rows=5423.00 loops=1)                                                                                    |
+  Sort Key: agg.total_repair_price DESC                                                                                                                                                    |
+  Sort Method: quicksort  Memory: 913kB                                                                                                                                                    |
+  Buffers: shared hit=15902 read=6716                                                                                                                                                      |
+  ->  Hash Join  (cost=38550.81..38766.11 rows=5423 width=137) (actual time=304.953..310.524 rows=5423.00 loops=1)                                                                         |
+        Hash Cond: (u.id = p.user_id)                                                                                                                                                      |
+        Buffers: shared hit=15902 read=6716                                                                                                                                                |
+        ->  Hash Join  (cost=38301.61..38502.66 rows=5423 width=108) (actual time=302.960..307.075 rows=5423.00 loops=1)                                                                   |
+              Hash Cond: (u.id = agg.user_id)                                                                                                                                              |
+              Buffers: shared hit=15799 read=6716                                                                                                                                          |
+              ->  Seq Scan on "User" u  (cost=0.00..183.98 rows=6498 width=28) (actual time=0.007..0.586 rows=6498.00 loops=1)                                                             |
+                    Buffers: shared hit=119                                                                                                                                                |
+              ->  Hash  (cost=38233.82..38233.82 rows=5423 width=80) (actual time=302.921..304.851 rows=5423.00 loops=1)                                                                   |
+                    Buckets: 8192  Batches: 1  Memory Usage: 525kB                                                                                                                         |
+                    Buffers: shared hit=15680 read=6716                                                                                                                                    |
+                    ->  Subquery Scan on agg  (cost=38111.80..38233.82 rows=5423 width=80) (actual time=299.742..303.611 rows=5423.00 loops=1)                                             |
+                          Buffers: shared hit=15680 read=6716                                                                                                                              |
+                          ->  Finalize HashAggregate  (cost=38111.80..38179.59 rows=5423 width=80) (actual time=299.741..302.938 rows=5423.00 loops=1)                                     |
+                                Group Key: r.user_id                                                                                                                                       |
+                                Batches: 1  Memory Usage: 1681kB                                                                                                                           |
+                                Buffers: shared hit=15680 read=6716                                                                                                                        |
+                                ->  Gather  (cost=36514.75..37884.04 rows=13015 width=80) (actual time=288.429..294.751 rows=16245.00 loops=1)                                             |
+                                      Workers Planned: 2                                                                                                                                   |
+                                      Workers Launched: 2                                                                                                                                  |
+                                      Buffers: shared hit=15680 read=6716                                                                                                                  |
+                                      ->  Partial HashAggregate  (cost=35514.75..35582.54 rows=5423 width=80) (actual time=284.235..285.781 rows=5415.00 loops=3)                          |
+                                            Group Key: r.user_id                                                                                                                           |
+                                            Batches: 1  Memory Usage: 1681kB                                                                                                               |
+                                            Buffers: shared hit=15680 read=6716                                                                                                            |
+                                            Worker 0:  Batches: 1  Memory Usage: 1681kB                                                                                                    |
+                                            Worker 1:  Batches: 1  Memory Usage: 1681kB                                                                                                    |
+                                            ->  Parallel Hash Join  (cost=7402.65..31808.10 rows=164740 width=44) (actual time=62.754..236.473 rows=131792.33 loops=3)                     |
+                                                  Hash Cond: (r.id = a.rental_id)                                                                                                          |
+                                                  Buffers: shared hit=15680 read=6716                                                                                                      |
+                                                  ->  Parallel Seq Scan on "Rental" r  (cost=0.00..23219.17 rows=451917 width=32) (actual time=0.543..37.539 rows=361533.33 loops=3)       |
+                                                        Buffers: shared hit=11984 read=6716                                                                                                |
+                                                  ->  Parallel Hash  (cost=5343.40..5343.40 rows=164740 width=44) (actual time=61.508..61.508 rows=131792.33 loops=3)                      |
+                                                        Buckets: 524288  Batches: 1  Memory Usage: 35104kB                                                                                 |
+                                                        Buffers: shared hit=3696                                                                                                           |
+                                                        ->  Parallel Seq Scan on "Accident" a  (cost=0.00..5343.40 rows=164740 width=44) (actual time=0.012..18.690 rows=131792.33 loops=3)|
+                                                              Buffers: shared hit=3696                                                                                                     |
+        ->  Hash  (cost=167.98..167.98 rows=6498 width=61) (actual time=1.954..1.955 rows=6498.00 loops=1)                                                                                 |
+              Buckets: 8192  Batches: 1  Memory Usage: 626kB                                                                                                                               |
+              Buffers: shared hit=103                                                                                                                                                      |
+              ->  Seq Scan on "Profile" p  (cost=0.00..167.98 rows=6498 width=61) (actual time=0.008..0.730 rows=6498.00 loops=1)                                                          |
+                    Buffers: shared hit=103                                                                                                                                                |
+Settings: work_mem = '64MB'                                                                                                                                                                |
+Planning:                                                                                                                                                                                  |
+  Buffers: shared hit=28                                                                                                                                                                   |
+Planning Time: 0.329 ms                                                                                                                                                                    |
+Execution Time: 314.052 ms                                                                                                                                                                 |
+
+| Объем аренд                                                | Использование индексов | Среднее время планирования  | Среднее время выполнения | Тип агрегации  | Метод сортировки | Память сортировки | Временные файлы (temp) | Чтение с диска    | Проблема                                                                                        | Вывод                                                                                                              |
+|:-----------------------------------------------------------|:-----------------------|:----------------------------|:-------------------------|:---------------|:-----------------|:------------------|:-----------------------|:------------------|:------------------------------------------------------------------------------------------------|:-------------------------------------------------------------------------------------------------------------------|
+| 10 000                                                     | нет                    | 0.354 ms                    | 6.357 ms                 | HashAggregate  | quicksort        | Memory: 31kB      | Нет                    | HashAggregate     | нет                                                                                             |                                                                                                                    |
+| 1 000 000                                                  | нет                    | 0.439 ms                    | 755.609 ms               | GroupAggregate | external merge   | Disk: ~15MB       | ~120 MB                | shared read ~7000 | промежуточная сортировка уходит во временные файлы и планировщик переоценивает количество групп | Рекомендуется проверить запрос при увеличенном work_mem и рассмотреть вариант предварительной агрегации по user_id |
+| 1 000 000(увеличение work_mem)                             | нет                    | 0.451 ms                    | 1022.109 ms              | HashAggregate  | quicksort        | Memory: 913kB     | Нет                    | shared read ~7000 | увеличилось среднее время выполнения и планировщик переоценивает количество групп               | увеличение work_mem до 64MB устраняет использование временных файлов,но не приводит к ускорению запроса            |
+| 1 000 000(предварительная агрегация)                       | нет                    | 0.310 ms                    | 383.344 ms               | HashAggregate  | quicksort        | Memory: 913kB     | ~78 MB                 | shared read ~7000 | все еще используются временные файлы                                                            | предварительная агрегация по user_id приводит к ускорению запроса, но не устраняет использование временных файлов  |
+| 1 000 000(увеличение work_mem и предварительная агрегация) | нет                    | 0.313 ms                    | 320.509 ms               | HashAggregate  | quicksort        | Memory: 913kB     | Нет                    | shared read ~7000 |                                                                                                 |                                                                                                                    |
